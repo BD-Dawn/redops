@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.env
+
+# CTF-specific
+blitz_*
+BLUSTAR_CTF_WRITEUPS.md
+
+# Engagement data
+evidence/
+research/
+data/
+
+# Bug bounty programs & artifacts
+BugBounty/
+Shell/
+findings/
+
+# Test output
+tests/test_results.json
+
+# Docs
+docs/
+
+# APKs and binaries
+*.xapk
+*.apk
+*.pem
