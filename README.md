@@ -1,19 +1,16 @@
 # RedOps
 
-AI-powered red team agent framework built on Claude. Automates offensive security workflows — recon, exploitation, post-exploitation, lateral movement, and reporting — through specialized agents coordinated by an orchestrator.
+Red team agent framework powered by Claude. Handles recon through post-ex with specialized agents that actually run tools, not just suggest them.
 
-> **Note:** Research mode is still in beta and not available on this build.
+> Research mode is still in beta and not available on this build.
 
-## Features
+## What it does
 
-- **Interactive CLI** with engagement management and opsec scoring
-- **Orchestrator mode** for autonomous multi-phase operations
-- **Sliver C2 integration** for implant management
-- **Specialized agents:** recon, exploit, post-exploitation (Windows/Linux), lateral movement, code review, vulnerability hunting, reverse engineering, fuzzing, crash triage, PoC building, and more
-- **RAG retrieval** over offensive security knowledge base
-- **Secret vault** to prevent credential leakage to the API
-- **Scope enforcement** and engagement logging
-- **MCP server** for tool integration
+RedOps runs offensive security operations through an orchestrator that coordinates task-specific agents (recon, exploit, post-ex, lateral movement, RE, fuzzing, etc). It integrates with Sliver for C2, has a RAG pipeline for pulling from offensive knowledge bases, and includes a secret vault so creds don't leak to the API.
+
+Two modes:
+- **Interactive** — CLI with engagement tracking and opsec scoring
+- **Orchestrator** — point it at a target and let it run
 
 ## Setup
 
@@ -22,29 +19,29 @@ pip install -r requirements.txt
 ./setup.sh
 ```
 
-## Usage
+## Running
 
-### Interactive mode
 ```bash
+# interactive
 python main.py
-```
 
-### Orchestrator mode
-```bash
+# orchestrator
 python main.py --orchestrator --target <target>
 ```
 
-## Environment Variables
+## Config
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `REDOPS_MODEL` | `claude-opus-4-8` | Primary model |
-| `REDOPS_MODEL_EXPLOIT` | `claude-sonnet-4-6` | Exploitation model |
-| `REDOPS_MODEL_FAST` | `claude-haiku-4-5-20251001` | Parsing/extraction |
-| `REDOPS_MAX_TURNS` | `25` | Interactive turn cap |
-| `REDOPS_CHAIN_TURNS` | `12` | Chain execution budget |
-| `REDOPS_TIMEOUT` | `1800` | Command timeout (seconds) |
+Everything is controlled through env vars. The defaults work fine for most setups.
+
+```
+REDOPS_MODEL          — primary model (default: claude-opus-4-8)
+REDOPS_MODEL_EXPLOIT  — exploitation turns (default: claude-sonnet-4-6)
+REDOPS_MODEL_FAST     — parsing/extraction (default: claude-haiku-4-5-20251001)
+REDOPS_MAX_TURNS      — interactive turn cap (default: 25)
+REDOPS_CHAIN_TURNS    — chain execution budget (default: 12)
+REDOPS_TIMEOUT        — command timeout in seconds (default: 1800)
+```
 
 ## License
 
-Private — not for distribution.
+Private. Not for distribution.
