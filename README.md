@@ -53,7 +53,7 @@ Red team agent framework powered by Claude. Handles recon through post-ex with s
 
 Three engagement modes that control how the system handles secrets, prompts, and exit conditions:
 
-**CTF** (`/ctf`) — Stripped-down prompts and auth headers tuned to avoid API policy filter noise in lab environments. Secret vault disabled. Exit conditions based on flag capture instead of engagement objectives.
+**CTF** (`/ctf`) — Fully autonomous by default. Stripped-down prompts and auth headers tuned to avoid API policy filter noise in lab environments. Secret vault and OPSEC scoring disabled. Permission prompts skipped. Auto-continue limit is 1000 turns (vs 200 in other modes) — runs until flags or Ctrl+C. Auto-restarts with fresh context when stuck instead of returning to the operator, and auto-retries on execution errors. Flag capture detection scans agent output for 32-char hex strings near root.txt/user.txt mentions and marks the engagement solved when found.
 
 **LE (Live Environment)** (`/mode le`) — Full secret vault active. Credentials and host identifiers are tokenized before hitting the API — the model never sees raw secrets. Engagement logging enabled for evidence chain integrity. Scope enforcement is strict.
 
