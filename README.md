@@ -57,7 +57,7 @@ Three engagement modes that control how the system handles secrets, prompts, and
 
 **LE (Live Environment)** (`/mode le`) — Full secret vault active. Credentials and host identifiers are tokenized before hitting the API — the model never sees raw secrets. Engagement logging enabled for evidence chain integrity. Scope enforcement is strict.
 
-**Red Team** (`/mode redteam`) — Same secret vault and scope enforcement as LE mode. Tuned for longer-running engagements with persistence across sessions. Attack planning tracks paths, blockers, and lessons learned across multiple operator sessions. OPSEC scoring reflects real-world detection risk against EDR/IDS.
+**Red Team** (`/mode redteam`) — Same secret vault and scope enforcement as LE mode. Tuned for longer-running engagements with persistence across sessions. Attack planning tracks paths, blockers, and lessons learned across multiple operator sessions. OPSEC scoring reflects real-world detection risk against EDR/IDS. Exit conditions are based on engagement objectives.
 
 ### Agent system
 
