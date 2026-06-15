@@ -19,7 +19,7 @@ Red team agent framework powered by Claude. Handles recon through post-ex with s
   │                     │  │                    │
   │  Micro-dispatch     │  │  Phase FSM         │
   │  1-N turns          │  │  Agent dispatch    │
-  │  Conversation loop  │  │  HITL decisions    │
+  │  Conversation loop  │  │  human-in-the-loop decisions    │
   │  Stuck detection    │  │  Cost tracking     │
   └────────────────────┘  │  Attack planning   │
                           │  Task decomposition │
@@ -126,7 +126,7 @@ Full engagement lifecycle through the CLI:
 - `/engagements` — list all saved engagements with status
 - `/nuke [target]` — wipe an engagement completely
 - `/new <target>` — fresh agent session, keeps engagement state
-- `/autonomous` — toggle autonomous mode (no HITL pauses)
+- `/autonomous` — toggle autonomous mode (no human-in-the-loop pauses)
 
 ### Credential and host tracking
 
