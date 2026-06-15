@@ -49,7 +49,15 @@ Red team agent framework powered by Claude. Handles recon through post-ex with s
 
 **Orchestrator** (`python main.py --orchestrator --target <target>`) — Phase-driven autonomous loop. Walks through recon → triage → exploit → post-ex → lateral → reporting. Each phase dispatches the right specialist agent, extracts attack primitives from the output, syncs findings to the DB, and decides the next move. Confidence scoring controls when it acts autonomously vs when it pauses for operator input.
 
+### Engagement modes
+
+Three engagement modes that control how the system handles secrets, prompts, and exit conditions:
+
 **CTF** (`/ctf`) — Stripped-down prompts and auth headers tuned to avoid API policy filter noise in lab environments. Secret vault disabled. Exit conditions based on flag capture instead of engagement objectives.
+
+**LE (Law Enforcement)** (`/le`) — Full secret vault active. Credentials and host identifiers are tokenized before hitting the API — the model never sees raw secrets. Engagement logging enabled for evidence chain integrity. OPSEC scoring and scope enforcement are strict.
+
+**Red Team** (`/redteam`) — Same secret vault and scope enforcement as LE mode. Tuned for longer-running engagements with persistence across sessions. Attack planning tracks paths, blockers, and lessons learned across multiple operator sessions. OPSEC scoring reflects real-world detection risk against EDR/IDS.
 
 ### Agent system
 
