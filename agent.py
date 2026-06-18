@@ -792,10 +792,9 @@ Rules:
                             self._hud_phase = self._detect_phase(cmd_str)
                             # Track for stuck detection
                             self._stuck.record_command(cmd_str)
-                            # OPSEC scoring — skip in CTF mode (no stealth needed, reduces
-                            # narrative context that can trigger policy filters)
                             _is_ctf = getattr(self.state, "engagement_mode", "ctf") == "ctf"
                             if not _is_ctf:
+                                # Full OPSEC scoring for LE/Red Team modes
                                 opsec_result = score_command(cmd_str)
                                 self.opsec_log.append({
                                     "command": cmd_str[:200],
@@ -823,7 +822,36 @@ Rules:
                                         "opsec_reasons": opsec_result.reasons,
                                     })
                             else:
-                                # CTF mode: HUD status, no opsec narrative
+                                # CTF mode: anti-cheat only, no stealth scoring
+                                opsec_result = score_command(cmd_str, ctf_mode=True)
+                                if opsec_result.ctf_blocked:
+                                    self.opsec_log.append({
+                                        "command": cmd_str[:200],
+                                        "score": opsec_result.score,
+                                        "level": opsec_result.level_name,
+                                        "reasons": opsec_result.reasons,
+                                        "time": datetime.now().isoformat(),
+                                        "action": "killed",
+                                    })
+                                    if on_status:
+                                        on_status(self._format_hud(
+                                            self._turn_count,
+                                            f"ANTI-CHEAT VIOLATION — {opsec_result.reasons[0]}"
+                                        ))
+                                    if on_progress:
+                                        on_progress({
+                                            "type": "ctf_anticheat",
+                                            "agent": "redops",
+                                            "command": cmd_str,
+                                            "reasons": opsec_result.reasons,
+                                        })
+                                    proc.kill()
+                                    response_text += (
+                                        f"\n\n*[SESSION KILLED — CTF anti-cheat violation: "
+                                        f"{opsec_result.reasons[0]}. "
+                                        f"Solve the box using your own methodology.]*"
+                                    )
+                                    break
                                 if on_status:
                                     on_status(self._format_hud(self._turn_count))
                                 if on_progress:

@@ -605,10 +605,13 @@ Login simulations trigger logon scripts and credential capture. Breaking them re
 - First attempt: `whoami > output.txt` only. Verify simulation still runs before expanding.
 - Check lastLogon timestamp after every script change. If it stops advancing, revert immediately.
 
-### Integrity Rules
-- Do NOT access writeups, walkthroughs, or solution guides for this target
-- Do NOT access HackTheBox forums, 0xdf, IppSec, InfoSecWriteups, or similar
-- Use: general technique knowledge, tool docs, exploit databases, CVE databases, enumeration results
+### Integrity Rules — ENFORCED (violation kills your session)
+Anti-cheat is active. Commands matching blocked patterns terminate the session immediately.
+- Do NOT access writeups, walkthroughs, or solution guides for any CTF/HTB target
+- Do NOT access AI chatbots (ChatGPT, Gemini, Claude, Perplexity, Phind, You.com)
+- Do NOT search Google/Bing/DuckDuckGo for box solutions, walkthroughs, or hints
+- Do NOT access HTB forums, 0xdf, IppSec, InfoSecWriteups, Reddit solution threads, or writeup blogs
+- Allowed: tool documentation, man pages, exploit-db, CVE databases, HackTricks, GTFOBins, PayloadsAllTheThings, tool repos
 
 ### Methodology
 - Every service/configuration exists for a reason — unusual configs are likely the path
@@ -972,14 +975,42 @@ This is a red team engagement simulating a real adversary.
                                     "opsec_reasons": opsec_result.reasons,
                                 })
                         else:
-                            # CTF mode: check anti-cheat only, no opsec scoring
+                            # CTF mode: anti-cheat only, no stealth scoring
                             opsec_result = score_command(
                                 last_cmd_str,
                                 scope_enforcer=getattr(self.state, "scope_enforcer", None),
                                 ctf_mode=True,
                             )
-                            # Only log if it's a scope violation or anti-cheat trigger
-                            if opsec_result.scope_violation or any("CTF MODE" in r for r in opsec_result.reasons):
+                            if opsec_result.ctf_blocked:
+                                self.opsec_log.append({
+                                    "command": last_cmd_str[:200],
+                                    "score": opsec_result.score,
+                                    "level": opsec_result.level_name,
+                                    "reasons": opsec_result.reasons,
+                                    "agent": self.AGENT_NAME,
+                                    "time": datetime.now().isoformat(),
+                                    "action": "killed",
+                                })
+                                if on_status:
+                                    on_status(
+                                        f"[{self.AGENT_NAME}] ANTI-CHEAT VIOLATION — "
+                                        f"{opsec_result.reasons[0]}"
+                                    )
+                                if on_progress:
+                                    on_progress({
+                                        "type": "ctf_anticheat",
+                                        "agent": self.AGENT_NAME,
+                                        "command": last_cmd_str,
+                                        "reasons": opsec_result.reasons,
+                                    })
+                                proc.kill()
+                                response_text += (
+                                    f"\n\n*[SESSION KILLED — CTF anti-cheat violation: "
+                                    f"{opsec_result.reasons[0]}. "
+                                    f"Solve the box using your own methodology.]*"
+                                )
+                                break
+                            if opsec_result.scope_violation or any("CTF ANTI-CHEAT" in r for r in opsec_result.reasons):
                                 self.opsec_log.append({
                                     "command": last_cmd_str[:200],
                                     "score": opsec_result.score,

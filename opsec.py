@@ -42,6 +42,12 @@ class OpsecResult:
     scope_detail: str = ""
 
     @property
+    def ctf_blocked(self) -> bool:
+        return self.score >= LEVEL_CRITICAL and any(
+            "CTF ANTI-CHEAT" in r for r in self.reasons
+        )
+
+    @property
     def level_name(self) -> str:
         return LEVEL_NAMES.get(self.score, "UNKNOWN")
 
@@ -198,13 +204,46 @@ _CTF_WRITEUP_DOMAINS = [
     r"forum\.hackthebox\.(com|eu)",
     # Writeup repos
     r"github\.com.{0,80}(htb|hackthebox|ctf).{0,40}(writeup|walkthrough|solution)",
+    # Blog/guide platforms with CTF solution content
+    r"hashnode\..{0,50}(htb|hackthebox|ctf|writeup|walkthrough)",
+    r"dev\.to.{0,50}(htb|hackthebox|ctf|writeup|walkthrough)",
+    r"notion\.site.{0,50}(htb|hackthebox|ctf|writeup|walkthrough)",
+    r"gitbook\.io.{0,80}(htb|hackthebox|ctf|writeup|walkthrough)",
+    # Dedicated walkthrough/guide platforms
+    r"bengrewell\.", r"0xss0rz\.", r"ar33zy\.", r"ivanitlearning\.",
+    r"d4mianwayne\.", r"manuelvargastapia\.",
+    r"blog\.tryhackme\.com.{0,50}(writeup|walkthrough|solution)",
+    # Reddit solution threads
+    r"reddit\.com.{0,60}(htb|hackthebox|ctf).{0,40}(writeup|walkthrough|solution|how.?to|hint)",
+    # Discord leak channels (public invite links to CTF solution servers)
+    r"discord\.(gg|com).{0,60}(htb|hackthebox|ctf).{0,30}(writeup|solution)",
+    # AI chatbots used to get box solutions
+    r"chat\.openai\.com", r"chatgpt\.com",
+    r"bard\.google\.com", r"gemini\.google\.com",
+    r"claude\.ai",
+    r"perplexity\.ai",
+    r"phind\.com",
+    r"you\.com.{0,40}(chat|search)",
 ]
 
 # Broader patterns for web requests that look like writeup fetching
 _CTF_WRITEUP_PATTERNS = [
     r"(curl|wget|lynx|w3m|fetch|http).{0,100}(writeup|walkthrough|solution|guide|cheatsheet).{0,50}(htb|hackthebox|ctf)",
     r"(curl|wget|lynx|w3m|fetch|http).{0,100}(htb|hackthebox).{0,50}(writeup|walkthrough|solution)",
-    r"searchsploit.{0,30}(walkthrough|writeup)",  # using searchsploit to find writeups, not exploits
+    r"searchsploit.{0,30}(walkthrough|writeup)",
+]
+
+# Search engine queries seeking box solutions (not tool docs)
+_CTF_SEARCH_PATTERNS = [
+    # Google/DDG/Bing searches for box walkthroughs
+    r"(google|duckduckgo|bing|startpage|searx)\..{0,30}(q=|search\?|\/search).{0,80}(writeup|walkthrough|solution|how.?to.?solve|flag|root\.txt|user\.txt).{0,40}(htb|hackthebox|tryhackme|ctf|vulnhub)",
+    r"(google|duckduckgo|bing|startpage|searx)\..{0,30}(q=|search\?|\/search).{0,80}(htb|hackthebox|tryhackme|ctf|vulnhub).{0,40}(writeup|walkthrough|solution|how.?to|guide|hint|flag)",
+    # Curl/wget to search engines with CTF solution queries
+    r"(curl|wget).{0,60}(google|duckduckgo|bing).{0,60}(writeup|walkthrough|solution).{0,40}(htb|hackthebox|ctf)",
+    r"(curl|wget).{0,60}(google|duckduckgo|bing).{0,60}(htb|hackthebox|ctf).{0,40}(writeup|walkthrough|solution)",
+    # Googler/ddgr/surfraw CLI search tools
+    r"(googler|ddgr|surfraw|s )\s.{0,80}(writeup|walkthrough|solution).{0,40}(htb|hackthebox|ctf)",
+    r"(googler|ddgr|surfraw|s )\s.{0,80}(htb|hackthebox|ctf).{0,40}(writeup|walkthrough|solution|guide)",
 ]
 
 _CTF_RULES: list[tuple[re.Pattern, int, str, list[str]]] = []
@@ -212,15 +251,22 @@ for domain_pattern in _CTF_WRITEUP_DOMAINS:
     _CTF_RULES.append((
         re.compile(domain_pattern, re.IGNORECASE),
         LEVEL_CRITICAL,
-        "CTF MODE: Accessing writeup/walkthrough site is prohibited — solve independently",
+        "CTF ANTI-CHEAT: Accessing writeup/walkthrough/AI-assistant site is prohibited — solve independently",
         ["Use your own analysis and the tools available on this system"],
     ))
 for wp in _CTF_WRITEUP_PATTERNS:
     _CTF_RULES.append((
         re.compile(wp, re.IGNORECASE),
         LEVEL_CRITICAL,
-        "CTF MODE: Fetching writeup/walkthrough content is prohibited",
+        "CTF ANTI-CHEAT: Fetching writeup/walkthrough content is prohibited",
         ["Analyze the target using your own methodology"],
+    ))
+for sp in _CTF_SEARCH_PATTERNS:
+    _CTF_RULES.append((
+        re.compile(sp, re.IGNORECASE),
+        LEVEL_CRITICAL,
+        "CTF ANTI-CHEAT: Searching for box solutions is prohibited — solve independently",
+        ["Use tool documentation, man pages, exploit-db, and CVE databases instead"],
     ))
 
 # --- OPSEC-positive patterns (reduce score) ---
