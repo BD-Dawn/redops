@@ -15,7 +15,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import MODEL, MODEL_FAST, MODEL_PLANNER, EVIDENCE_DIR, FINDINGS_DIR, CHAIN_MAX_TURNS
+from config import MODEL, MODEL_FAST, MODEL_PLANNER, EVIDENCE_DIR, FINDINGS_DIR, CHAIN_MAX_TURNS, MAX_ENGAGEMENT_COST
 from agents.recon import ReconAgent
 from agents.exploit import ExploitAgent
 from agents.postex import PostExAgent
@@ -31,6 +31,7 @@ from agents.linux_postex import LinuxPostExAgent
 from agents.windows_postex import WindowsPostExAgent
 from agents.linux_lateral import LinuxLateralAgent
 from agents.windows_lateral import WindowsLateralAgent
+from agents.cloud import CloudAgent
 from agents.summarizer import cache_output, summarize_output, extract_findings_from_summary
 from findings_db import FindingsDB
 from exit_evaluator import ExitEvaluator
@@ -157,7 +158,7 @@ class Orchestrator:
     """
 
     PHASES = [
-        "recon", "exploit", "postex", "codereview", "cvehunter",
+        "recon", "exploit", "postex", "codereview", "cvehunter", "cloud",
         "triage", "noise_filter", "param_analyzer", "sanity_checker", "synthesis", "report",
         "linux_postex", "windows_postex", "linux_lateral", "windows_lateral",
     ]
@@ -181,6 +182,7 @@ class Orchestrator:
         "windows_postex": WindowsPostExAgent,
         "linux_lateral": LinuxLateralAgent,
         "windows_lateral": WindowsLateralAgent,
+        "cloud": CloudAgent,
     }
 
     def __init__(self, engagement_state, autonomous: bool = True):
@@ -386,12 +388,33 @@ class Orchestrator:
             return "windows"
         return "unknown"
 
+    def _detect_cloud(self) -> bool:
+        """Detect if the engagement involves cloud infrastructure."""
+        notes_str = " ".join(self.state.notes).lower()
+        results_str = ""
+        for agent in (self._agents.get("recon"), self._agents.get("exploit")):
+            if agent and agent.results:
+                last = agent.results[-1].get("response", "") + agent.results[-1].get("summary", "")
+                results_str += last.lower()
+
+        combined = notes_str + " " + results_str
+
+        cloud_signals = [
+            "aws", "boto3", "iam", "s3 bucket", "lambda", "ec2",
+            "sqs", "sts", "codebuild", "localstack", "imds",
+            "169.254.169.254", "metadata", "instance-profile",
+            "gcloud", "gcp", "azure", "az ", "kubectl",
+            "eks", "ecs", "fargate", "assume-role",
+        ]
+        return sum(1 for s in cloud_signals if s in combined) >= 2
+
     def _resolve_agent(self, agent_name: str) -> str:
-        """Auto-route generic agent names to OS-specific variants.
+        """Auto-route generic agent names to OS-specific or substrate-specific variants.
 
         Maps:
           postex → linux_postex / windows_postex
           lateral → linux_lateral / windows_lateral
+          exploit (with cloud context) → cloud (when task is cloud-specific)
         """
         os_type = self._detect_os()
 
@@ -1200,6 +1223,7 @@ Rules:
             "windows_lateral": "Windows/AD lateral movement — pass-the-hash, Kerberos, ADCS, delegation, WinRM/DCOM, domain dominance, DCSync",
             "synthesis": "Combinatorial attack path analysis — finds chains that combine 2+ findings into viable paths",
             "postex": "Generic post-exploitation (fallback — prefer OS-specific agents above)",
+            "cloud": "Cloud substrate specialist — IAM enumeration, permission-keyed escalation, SSRF→IMDS, cross-account lateral, SQS/Lambda/CodeBuild exploitation, LocalStack bypass. Use when cloud APIs, IAM roles, or managed services are involved.",
             "codereview": "Source code analysis, vulnerability discovery, secret extraction from discovered code",
             "cvehunter": "CVE scanning, PoC research and acquisition, vulnerability validation against discovered services",
         }
@@ -1704,6 +1728,18 @@ Respond with ONLY the JSON object, nothing else."""
         iteration = 0
 
         while iteration < max_micro_dispatches:
+            # Hard cost ceiling — stop autonomous dispatch regardless of the
+            # iteration budget. Mirrors the interactive agent's ceiling so no
+            # autonomous path can run away on spend.
+            _eng_cost = getattr(self.state, "total_cost", 0.0)
+            if _eng_cost >= MAX_ENGAGEMENT_COST:
+                if on_status:
+                    on_status(
+                        f"[orchestrator] Cost ceiling ${MAX_ENGAGEMENT_COST:.2f} reached "
+                        f"(${_eng_cost:.2f} spent) — halting autonomous dispatch."
+                    )
+                break
+
             # Between batches: update attack plan, then exit check, then re-plan
             if not task_queue:
                 # Update the strategic plan with results from last batch

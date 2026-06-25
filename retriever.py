@@ -9,7 +9,7 @@ Improvements over baseline:
 
 import re
 import chromadb
-from config import CHROMA_DIR, TOP_K, RAG_MAX_DISTANCE
+from config import CHROMA_DIR, TOP_K, RAG_MAX_DISTANCE, get_embedding_function
 
 # Conjunctions / connectors that signal distinct sub-topics in a query
 _SPLIT_RE = re.compile(
@@ -20,8 +20,10 @@ _SPLIT_RE = re.compile(
 # Minimum length for a sub-query to be worth searching
 _MIN_SUBQUERY_LEN = 12
 
-# Tighter distance cutoff — 1.3 lets in too much noise
-_EFFECTIVE_MAX_DISTANCE = min(RAG_MAX_DISTANCE, 1.05)
+# Distance cutoff comes straight from config — do NOT re-clamp here. A previous
+# min(RAG_MAX_DISTANCE, 1.05) clamp silently overrode the config value and
+# starved retrieval (all-MiniLM hits land at 1.2-1.35).
+_EFFECTIVE_MAX_DISTANCE = RAG_MAX_DISTANCE
 
 # Minimum chunk text length — filters out stubs with no actionable content
 _MIN_CHUNK_LEN = 80
@@ -118,13 +120,18 @@ class KnowledgeBase:
         """Auto-detect the collection name."""
         for name in self._COLLECTION_NAMES:
             try:
-                return self.client.get_collection(name)
+                return self.client.get_collection(
+                    name, embedding_function=get_embedding_function()
+                )
             except Exception:
                 continue
-        # Last resort: try first available collection
+        # Last resort: first available collection — re-fetch by name with the
+        # pinned EF so the handle never falls back to Chroma's implicit default.
         collections = self.client.list_collections()
         if collections:
-            return collections[0]
+            return self.client.get_collection(
+                collections[0].name, embedding_function=get_embedding_function()
+            )
         raise RuntimeError(
             f"No ChromaDB collection found in {CHROMA_DIR}. "
             f"Run: python3 ingest.py"

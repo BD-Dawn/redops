@@ -14,6 +14,7 @@ Engagements NEVER share state. Switching engagements is a clean cut.
 """
 
 import json
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any
 from config import ENGAGEMENTS_DIR, EVIDENCE_BASE
 from scope_enforcer import ScopeDefinition, ScopeEnforcer
 from target_manager import TargetManager
+from cloud_state import CloudState
 
 
 # ---------------------------------------------------------------------------
@@ -299,12 +301,14 @@ _FIELDS: list[tuple[str, str, Any]] = [
     ("service_configs",     "service_configs",     list),
     ("resume_point",        "resume_point",        ""),
     ("resume_priority",     "resume_priority",     0),
+    ("session_id",          "session_id",          ""),  # Claude CLI conversation id for --resume across restarts
     ("autonomous",          "autonomous",          False),
     ("engagement_mode",     "engagement_mode",     "ctf"),
     ("total_cost",           "total_cost",           0.0),
     ("total_time_secs",      "total_time_secs",      0.0),
     ("ctf_platform",        "ctf_platform",        ""),
     ("flags",               "flags",               dict),
+    ("ruled_out",           "ruled_out",           list),
 ]
 
 
@@ -350,6 +354,7 @@ class Engagement:
         self.target_manager: TargetManager = TargetManager()
         self.task_ledger: TaskLedger = TaskLedger()
         self.phases: PhaseTracker = PhaseTracker()
+        self.cloud_state: CloudState = CloudState()
 
     # --- Naming / Paths ---
 
@@ -423,13 +428,210 @@ class Engagement:
             "time": datetime.now().isoformat(),
         })
 
+    # Access levels ordered weakest → strongest, for idempotent upgrades.
+    _ACCESS_RANK = {"user": 1, "shell": 1, "admin": 2, "root": 3, "system": 3}
+
+    def ensure_phase_at_least(self, phase: str) -> bool:
+        """Advance the engagement phase forward to `phase` if currently behind it.
+        Never regresses. Without this, the phase tracker only ever moved at full-solve
+        (mark_solved -> COMPLETED), so an engagement with a live foothold + user flag
+        stayed pinned at 'recon' — telling the agent to re-scan a box it already owns."""
+        order = Phase.ORDER
+        try:
+            cur_i = order.index(self.phases.current)
+            tgt_i = order.index(phase)
+        except ValueError:
+            return False
+        if tgt_i > cur_i:
+            self.phases.advance(phase)
+            return True
+        return False
+
     def add_compromised_host(self, hostname: str, ip: str = "", access_level: str = "user"):
+        """Record (or upgrade) a compromised host. Idempotent: a repeat call for the
+        same host only upgrades the access level, never appends a duplicate. Populating
+        this typed field is what makes milestone_corroborated() satisfiable for terminal
+        (root/SYSTEM) claims — see the loop diagnosis in record_flag()."""
+        # A confirmed foothold means recon/triage/exploit are behind us — reflect that
+        # so the agent doesn't waste budget re-running recon on an owned box.
+        self.ensure_phase_at_least(Phase.POSTEX)
+        key = (hostname or ip or "").lower()
+        new_rank = self._ACCESS_RANK.get(access_level, 1)
+        for h in self.compromised_hosts:
+            if (h.get("hostname", "") or h.get("ip", "")).lower() == key:
+                if new_rank > self._ACCESS_RANK.get(h.get("access_level", "user"), 1):
+                    h["access_level"] = access_level
+                    h["time"] = datetime.now().isoformat()
+                return
         self.compromised_hosts.append({
             "hostname": hostname,
             "ip": ip,
             "access_level": access_level,
             "time": datetime.now().isoformat(),
         })
+
+    # --- CTF flag write-back (single source of truth for both modes) ---
+
+    _FLAG_RE = r'\b[a-f0-9]{32}\b'   # HTB-format flag, with word boundaries (for findall)
+    _FLAG_FULL = r'[a-f0-9]{32}'      # same, for fullmatch validation
+
+    def record_flag(self, label: str, value: str, raw_output: str = "") -> bool:
+        """Persist a captured CTF flag into typed state. Returns True if newly recorded.
+
+        This is the write-back the agent was missing: flags previously went into a
+        transient ``_ctf_flags`` attribute that was never serialized, so ``flags`` on
+        disk stayed empty — which left ``ctf_objective_complete()`` and
+        ``milestone_corroborated()`` permanently un-triggerable and made autonomous
+        runs grind the full budget without ever recognizing the objective.
+
+        Grounding: when ``raw_output`` is supplied the flag value MUST appear in it,
+        so a value the agent only narrated (never read from a tool) is refused.
+        Capturing a flag also corroborates host access, so terminal milestones stop
+        being rejected as hallucinations.
+
+        Two domain invariants guard against the narrative-rescan corruption that
+        silently marked a box solved (a captured ``user`` flag value re-recorded as
+        ``root`` when stored notes/resume_point — which name "root.txt" — were
+        re-scanned with no raw tool output):
+          1. A terminal label (root/system) requires grounding: the value MUST be
+             present in raw_output. Empty raw_output is NOT a free pass — a terminal
+             flag the tools never returned is refused outright.
+          2. A flag value is unique to one label. user.txt and root.txt always differ,
+             so a value already recorded under another label cannot be re-recorded
+             (the exact user->root promotion that falsely completed the objective).
+        """
+        label = (label or "").strip().lower()
+        value = (value or "").strip().lower()
+        if not value or not re.fullmatch(self._FLAG_FULL, value):
+            return False
+        _terminal = label in ("root", "system")
+        if raw_output and value not in raw_output.lower():
+            return False  # ungrounded — refuse a flag the tools never actually returned
+        if _terminal and value not in (raw_output or "").lower():
+            return False  # terminal flags must be grounded; narrative alone is never enough
+        if not isinstance(getattr(self, "flags", None), dict):
+            self.flags = {}
+        if self.flags.get(label) == value:
+            return False
+        for _lbl, _val in self.flags.items():
+            if _val == value and _lbl != label:
+                return False  # same value under a different label — impossible (user != root)
+        self.flags[label] = value
+        # A captured flag implies host access at (at least) that level — corroborate it.
+        self.add_compromised_host(
+            self.target or "target", ip=self.target or "",
+            access_level=("root" if label in ("root", "system") else "user"))
+        if self.ctf_objective_complete():
+            self.mark_solved(self.flags)   # advances phase to COMPLETED + saves
+        else:
+            self.notes.append(f"FLAG CAPTURED [{label}]: {value}")
+            self.save()
+        return True
+
+    def scan_and_record_flags(self, narrative: str, raw_output: str = "") -> dict:
+        """Find HTB-format flags in agent output, label them, and persist them.
+
+        Centralizes the user/root disambiguation that the old interactive-only
+        ``_check_ctf_flags`` got wrong (it promoted any lone 32-hex string to
+        ``root`` and then declared OBJECTIVE COMPLETE — the exact mislabel that
+        marked user.txt as root). Labeling here is conservative: ambiguous flags
+        default to ``user`` (non-terminal), so a misread never falsely ends the
+        engagement. Returns {label: value} for flags newly recorded this call."""
+        if not narrative:
+            return {}
+        text = narrative.lower()
+        recorded: dict = {}
+        for value in re.findall(self._FLAG_RE, text):
+            label = self._label_flag(value, text)
+            if self.record_flag(label, value, raw_output=raw_output):
+                recorded[label] = value
+        return recorded
+
+    def _label_flag(self, value: str, text: str) -> str:
+        """Label a flag user/root by proximity to '<x>.txt' markers, defaulting to
+        'user' on ambiguity (the safe, non-terminal choice)."""
+        idx = text.find(value)
+        window = text[max(0, idx - 90): idx + 90] if idx >= 0 else text
+        if "root.txt" in window or "root flag" in window or "root.txt" in window:
+            return "root"
+        if "user.txt" in window or "user flag" in window:
+            return "user"
+        # Document-level fallback, still biased away from the terminal 'root' label.
+        if "root.txt" in text and "user.txt" not in text and "root" not in self.flags:
+            return "root"
+        return "user"
+
+    def record_dead_end(self, approach: str, reason: str = "") -> bool:
+        """Persist a ruled-out approach so resumes/sub-agents don't re-attempt it.
+
+        This is the dead-end memory the agent lacked: across four budget-exhausting
+        runs it re-derived the same impossible SSRF→SQS path because nothing recorded
+        that it had already been ruled out. Deduplicated and capped."""
+        approach = (approach or "").strip()
+        if not approach:
+            return False
+        if not isinstance(getattr(self, "ruled_out", None), list):
+            self.ruled_out = []
+        for e in self.ruled_out:
+            if e.get("approach", "").lower() == approach.lower():
+                return False  # already known dead end
+        self.ruled_out.append({
+            "approach": approach,
+            "reason": (reason or "").strip(),
+            "time": datetime.now().isoformat(),
+        })
+        self.ruled_out = self.ruled_out[-40:]   # cap memory growth
+        return True
+
+    # Conclusion-level phrases only (not raw "permission denied" noise from recon),
+    # so the dead-end ledger records decisions the agent reached, not every error.
+    _DEAD_END_RE = re.compile(
+        r'([^.\n]{0,150}?\b(?:dead[\s-]?end|ruled\s+out|not\s+exploitable|not\s+vulnerable'
+        r'|does(?:n.t| not)\s+work|won.t\s+work|will\s+not\s+work|not\s+viable'
+        r'|no\s+longer\s+viable|is\s+a\s+dead\s+end)\b[^.\n]{0,80})',
+        re.IGNORECASE)
+
+    def scan_and_record_dead_ends(self, narrative: str, max_new: int = 3) -> int:
+        """Extract explicit dead-end conclusions from agent output into the ledger.
+
+        Conservative by design — only conclusion phrasing ('ruled out', 'not
+        exploitable', "doesn't work"), never bare tool errors, since the goal is to
+        stop the agent re-deriving paths it already abandoned across resumes."""
+        if not narrative:
+            return 0
+        added = 0
+        for m in self._DEAD_END_RE.finditer(narrative):
+            if added >= max_new:
+                break
+            clause = " ".join(m.group(1).split())[:200]
+            if self.record_dead_end(clause):
+                added += 1
+        if added:
+            self.save()
+        return added
+
+    def reconcile_checkpoint(self) -> bool:
+        """Self-heal a stale/false terminal checkpoint on load.
+
+        A resume_point claiming a terminal win (priority >= 90: root/DA/SYSTEM) must
+        be backed by typed state. If flags and compromised_hosts are both empty and
+        the engagement isn't actually solved, the checkpoint is a leftover lie (e.g.
+        'ROOT/SYSTEM access achieved' with flags:{}) that pins resume_priority at the
+        ceiling, blocks all further milestone upgrades, and misdirects every resume.
+        Downgrade it to a truthful, non-terminal checkpoint. Returns True if reset."""
+        if getattr(self, "resume_priority", 0) < 90:
+            return False
+        if self.is_solved:
+            return False
+        if (getattr(self, "flags", None) or getattr(self, "compromised_hosts", None)):
+            return False
+        self.resume_point = (
+            f"Prior terminal checkpoint was uncorroborated (no flags/host recorded) "
+            f"and has been reset. Re-establish access from confirmed footholds on "
+            f"{self.target or 'the target'}; do NOT trust earlier 'root achieved' claims."
+        )
+        self.resume_priority = 60   # shell-level: allow real milestones to re-assert
+        return True
 
     def parse_credentials_from_text(self, text: str, source: str = "user_input") -> int:
         """Extract credentials from free-form text (user messages, agent output).
@@ -536,6 +738,54 @@ class Engagement:
                 self.add_credential(user, nt_hash, "ntlm_hash", source=source)
                 existing_pairs.add((user.lower(), nt_hash))
                 added += 1
+
+        # Pattern 4: AWS / cloud access keys. The AKIA/ASIA/AROA/AIDA prefix + 16
+        # base32 chars is a near-zero-false-positive signature. Previously NO pattern
+        # matched ENV-dump cloud creds, so harvested keys (e.g. a worker's
+        # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) never reached typed state and got
+        # re-derived from scratch every resume. Case-sensitive (keys are not lowercased).
+        _AWS_AKID = _re.compile(r'\b((?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16})\b')
+        _AWS_SECRET = _re.compile(
+            r'(?:aws[_-]?)?secret[_-]?access[_-]?key["\']?\s*[:=]\s*["\']?([A-Za-z0-9/+]{40})',
+            _re.IGNORECASE)
+        _sm = _AWS_SECRET.search(text)
+        _aws_secret = _sm.group(1) if _sm else ""
+        # Also extract session token for STS creds
+        _AWS_TOKEN = _re.compile(
+            r'(?:aws[_-]?)?session[_-]?token["\']?\s*[:=]\s*["\']?([A-Za-z0-9/+=]{100,})',
+            _re.IGNORECASE)
+        _tm = _AWS_TOKEN.search(text)
+        _aws_token = _tm.group(1) if _tm else ""
+
+        # Extract ARN if present
+        _AWS_ARN = _re.compile(r'(arn:aws:[a-z0-9-]+:[\w-]*:\d{12}:[a-zA-Z0-9/_+=.@-]+)')
+        _am = _AWS_ARN.search(text)
+        _aws_arn = _am.group(1) if _am else ""
+
+        for m in _AWS_AKID.finditer(text):
+            akid = m.group(1)
+            secret = _aws_secret or "(secret not captured)"
+            if (akid.lower(), secret) in existing_pairs:
+                continue
+            self.add_credential(akid, secret, "aws_key", source=source)
+            existing_pairs.add((akid.lower(), secret))
+            added += 1
+
+            # Populate cloud state with the discovered credential
+            try:
+                from cloud_state import CloudCredential
+                cc = CloudCredential(
+                    provider="aws",
+                    identity_arn=_aws_arn,
+                    access_key=akid,
+                    secret_key=secret,
+                    session_token=_aws_token,
+                    source=source,
+                    is_root=akid.startswith("AKIA"),  # ASIA = STS temp creds
+                )
+                self.cloud_state.add_credential(cc)
+            except Exception:
+                pass
 
         if added:
             self.save()
@@ -725,6 +975,7 @@ class Engagement:
         data["target_manager"] = self.target_manager.to_dict()
         data["task_ledger"] = self.task_ledger.to_dict()
         data["phases"] = self.phases.to_dict()
+        data["cloud_state"] = self.cloud_state.to_dict()
         data["saved_at"] = datetime.now().isoformat()
         return data
 
@@ -757,6 +1008,10 @@ class Engagement:
         if ph_data:
             self.phases.load_from_dict(ph_data)
 
+        # Restore cloud state
+        cs_data = data.get("cloud_state", {})
+        self.cloud_state = CloudState.from_dict(cs_data) if cs_data else CloudState()
+
     def save(self):
         """Save engagement state to its per-engagement directory."""
         if not self.target:
@@ -774,6 +1029,10 @@ class Engagement:
         self._update_paths()
         # Clean up garbage credentials on load (from overly aggressive parser)
         self.sanitize_credentials()
+        # Self-heal a stale/false terminal checkpoint (e.g. "ROOT achieved" with
+        # flags:{} and no compromised host) before it misdirects the resume.
+        if self.reconcile_checkpoint():
+            self.save()
         return True
 
     def dashboard(self) -> dict:
@@ -1062,6 +1321,37 @@ class Engagement:
         self.phases.advance(Phase.COMPLETED)
         self.save()
 
+    def milestone_corroborated(self, priority: int) -> bool:
+        """Whether a milestone of the given priority is backed by engagement state.
+
+        High-value milestones (priority >= 90: root / Domain Admin / SYSTEM) are
+        terminal claims that set the agent's objective and can trigger fresh
+        autonomous cycles. A regex match on the agent's *narrative* is not enough
+        — a hallucinated "I have root" must not become the objective. Require at
+        least one recorded flag or one compromised host before honoring it.
+        Lower-priority milestones (discovery, shell) pass through unchanged.
+        """
+        if priority < 90:
+            return True
+        if getattr(self, "flags", None):
+            return True
+        if getattr(self, "compromised_hosts", None):
+            return True
+        return False
+
+    def ctf_objective_complete(self) -> bool:
+        """True once enough flags are recorded to consider the CTF box done.
+
+        Used to stop autonomous --auto continuation at the natural objective
+        instead of grinding out the full continuation budget. Threshold is
+        config.CTF_FLAG_GOAL (default 2 = user + root)."""
+        try:
+            from config import CTF_FLAG_GOAL
+        except Exception:
+            CTF_FLAG_GOAL = 2
+        flags = getattr(self, "flags", None) or {}
+        return len(flags) >= CTF_FLAG_GOAL
+
     @property
     def is_solved(self) -> bool:
         # Explicit status always honored
@@ -1074,6 +1364,9 @@ class Engagement:
         # in a non-literal context.
         if getattr(self, "engagement_mode", "ctf") != "ctf":
             return False
+        # Typed state is authoritative: solved once the flag goal is met.
+        if self.ctf_objective_complete():
+            return True
         rp = (self.resume_point or "").upper()
         if "OBJECTIVE COMPLETE" in rp:
             return True
@@ -1083,7 +1376,9 @@ class Engagement:
 
     @property
     def has_exploit_data(self) -> bool:
-        return bool(self.credentials or self.capabilities or self.trust_relationships)
+        return bool(self.credentials or self.capabilities or self.trust_relationships
+                     or self.resume_point or self.compromised_hosts
+                     or self.attack_surfaces)
 
     # --- Prompt Summaries ---
 
@@ -1131,6 +1426,23 @@ class Engagement:
                 lines.append(f"\n### Engagement Notes")
                 for n in other_notes[-10:]:
                     lines.append(f"  - {n}")
+
+        # Captured flags — positive progress the agent must not re-chase.
+        if getattr(self, "flags", None):
+            lines.append(f"\n### Flags Captured ({len(self.flags)})")
+            for _label, _val in self.flags.items():
+                lines.append(f"  - {_label}: {_val}")
+
+        # Ruled-out approaches — dead-end memory; do NOT re-attempt these.
+        if getattr(self, "ruled_out", None):
+            lines.append(f"\n### ⛔ RULED OUT — do NOT retry ({len(self.ruled_out)})")
+            for e in self.ruled_out[-12:]:
+                _r = f" — {e['reason']}" if e.get("reason") else ""
+                lines.append(f"  - {e['approach']}{_r}")
+
+        # Cloud state (compact one-liner if any cloud activity)
+        if self.cloud_state and (self.cloud_state.credentials or self.cloud_state.identities):
+            lines.append(f"\n### Cloud: {self.cloud_state.summary_oneliner()}")
 
         # Task ledger (compact in main summary)
         task_summary = self.task_ledger.summary(compact=True)

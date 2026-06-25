@@ -2713,7 +2713,8 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
             eng = agent._engagement_mgr.switch(name)
             if eng:
                 agent.state = eng
-                agent._session_id = ""
+                # Resume the saved conversation thread for this engagement.
+                agent._session_id = getattr(eng, "session_id", "") or ""
                 agent.conversation_history = []
                 orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                 agent.orchestrator = orchestrator
@@ -3247,7 +3248,8 @@ def main():
                             _found = _mgr.switch(_candidate)
                             if _found and _found.target != agent.state.target:
                                 agent.state = _found
-                                agent._session_id = ""
+                                # Resume the saved conversation thread for this engagement.
+                                agent._session_id = getattr(_found, "session_id", "") or ""
                                 agent.conversation_history = []
                                 orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                                 agent.orchestrator = orchestrator
@@ -3277,7 +3279,7 @@ def main():
                 if agent.state.has_exploit_data:
                     handle_command(agent, c2, orchestrator, "/auto continue")
                     continue
-                # else: fall through to interactive agent (faster for recon/initial enum)
+                # else: fall through to interactive agent (no prior progress to resume)
 
             # Persist user-provided context as engagement notes so it survives restarts.
             # Only save messages that contain actionable target context — NOT

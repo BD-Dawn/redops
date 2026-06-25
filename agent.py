@@ -46,7 +46,10 @@ class RedTeamAgent:
             else:
                 self.state = Engagement()
                 self._engagement_mgr.current = self.state
-        self._session_id: str = ""
+        # Restore the Claude CLI conversation id from the loaded engagement so a
+        # process restart (e.g. after Ctrl+C on --auto) resumes the same session
+        # instead of starting a fresh one and losing in-session context.
+        self._session_id: str = getattr(self.state, "session_id", "") or ""
         self._last_cost: float = 0
         self._last_turns: int = 0
         self._turn_count: int = 0
@@ -199,6 +202,26 @@ class RedTeamAgent:
             lean.append(f"Compromised: {hosts}")
         if lean:
             parts.append("\n## State\n" + "\n".join(lean))
+
+        # Cloud state — inject when cloud credentials/identities are present
+        cloud_state = getattr(self.state, "cloud_state", None)
+        if cloud_state:
+            cloud_section = cloud_state.for_prompt()
+            if cloud_section:
+                parts.append(f"\n## Cloud State\n{cloud_section}")
+            warnings = cloud_state.expiry_warnings()
+            if warnings:
+                parts.append("\n".join(f"⚠ {w}" for w in warnings))
+            cloud_state.evaluate_escalation_paths()
+            viable = cloud_state.viable_paths()
+            if viable:
+                esc_block = "\n## VIABLE CLOUD ESCALATION PATHS\n"
+                for p in viable[:5]:
+                    esc_block += f"### {p.name}\n{p.description}\n"
+                    for cmd in p.commands[:3]:
+                        esc_block += f"  $ {cmd}\n"
+                    esc_block += "\n"
+                parts.append(esc_block)
 
         # Operator directives — user corrections/context provided after interrupt
         directives = [n for n in self.state.notes if n.startswith("[operator directive]")]
@@ -372,11 +395,28 @@ If you catch yourself doing recon after finding something exploitable, STOP and 
                 return False
         return True
 
+    _CLOUD_RAG_QUERIES = [
+        "AWS IAM privilege escalation PassRole AssumeRole CreatePolicyVersion",
+        "cloud SSRF IMDS metadata credential theft EC2 instance role",
+        "AWS SQS Lambda CodeBuild container escape privilegedMode",
+    ]
+
+    def _has_cloud_context(self) -> bool:
+        """Detect cloud signals in engagement state (mirrors orchestrator._detect_cloud)."""
+        cloud_state = getattr(self.state, "cloud_state", None)
+        if cloud_state and (cloud_state.credentials or cloud_state.identities):
+            return True
+        combined = " ".join(self.state.notes).lower()
+        signals = ["aws", "iam", "s3", "lambda", "ec2", "sqs", "sts",
+                    "169.254.169.254", "imds", "localstack", "gcloud", "azure", "kubectl"]
+        return sum(1 for s in signals if s in combined) >= 2
+
     def _retrieve_context(self, message: str) -> str:
         """Search the knowledge base for relevant material.
 
         Uses multi-query decomposition so complex questions retrieve
-        chunks for each sub-topic independently.
+        chunks for each sub-topic independently. Supplements with
+        cloud-specific queries when cloud context is detected.
         """
         if not self._needs_rag(message):
             return ""
@@ -384,6 +424,10 @@ If you catch yourself doing recon after finding something exploitable, STOP and 
             kb = _get_kb()
             scope = getattr(self.state, "engagement_id", None)
             hits = kb.multi_search(message, scope=scope)
+            if self._has_cloud_context():
+                for cq in self._CLOUD_RAG_QUERIES:
+                    cloud_hits = kb.search(cq, scope=scope)
+                    hits.extend(cloud_hits)
             if hits:
                 return self._sanitize(kb.format_context(hits))
         except Exception:
@@ -393,8 +437,8 @@ If you catch yourself doing recon after finding something exploitable, STOP and 
     # Max auto-continuations before requiring user input (prevents infinite loops).
     # CTF mode uses a higher limit since the objective is clear (capture flags)
     # and the operator can Ctrl+C at any time.
-    MAX_AUTO_CONTINUES = 8       # 8 × 25 = 200 turns (non-CTF)
-    MAX_AUTO_CONTINUES_CTF = 40  # 40 × 25 = 1000 turns (CTF — run until flags or Ctrl+C)
+    MAX_AUTO_CONTINUES = _config.MAX_AUTO_CONTINUES          # non-CTF (config/env)
+    MAX_AUTO_CONTINUES_CTF = _config.MAX_AUTO_CONTINUES_CTF  # CTF (config/env; lowered from 40)
 
     # --- HUD state (compact operator display) ---
     _hud_last_cmd: str = ""
@@ -757,6 +801,18 @@ Rules:
 
                     etype = event.get("type", "")
 
+                    # Capture the live session id as soon as it appears (the init
+                    # event carries it up front). Without this, an interrupt before
+                    # the final result event leaves no id to resume from. Mirror it
+                    # onto the engagement so a save() during Ctrl+C persists it.
+                    _sid = event.get("session_id")
+                    if _sid:
+                        self._session_id = _sid
+                        try:
+                            self.state.session_id = _sid
+                        except Exception:
+                            pass
+
                     # Accumulate all output for the primitive extractor.
                     # response_text only captures the final result/last thinking block,
                     # but tool results contain the actual findings (nmap, LDAP, ACLs).
@@ -901,6 +957,16 @@ Rules:
                         if event.get("is_error") and result_content:
                             self._stuck.record_error(result_content)
                             self._log.command_error("redops", self._hud_last_cmd, result_content[:300])
+
+                        # Check for milestones in tool output to inform stuck detector
+                        if result_content and len(result_content) > 20:
+                            import re as _ms_re
+                            _rc_lower = result_content.lower()
+                            for _milestone_entry in self._MILESTONES:
+                                _mpat = _milestone_entry[1]
+                                if _ms_re.search(_mpat, _rc_lower):
+                                    self._stuck.record_milestone()
+                                    break
 
                         # Stuck detection — kill on strategic loop
                         stuck_msg = self._stuck.check(self._turn_count)
@@ -1050,6 +1116,23 @@ Rules:
                         max_continues = self.MAX_AUTO_CONTINUES_CTF if _is_ctf else self.MAX_AUTO_CONTINUES
 
                         auto_continues = getattr(self, "_auto_continue_count", 0)
+
+                        # --- Hard stops that override the continuation budget ---
+                        _cost = getattr(self.state, "total_cost", 0.0)
+                        _cost_exceeded = _cost >= _config.MAX_ENGAGEMENT_COST
+                        _objective_done = _is_ctf and self.state.ctf_objective_complete()
+                        if is_autonomous and (_cost_exceeded or _objective_done):
+                            reason = ("cost ceiling ${:.2f}".format(_config.MAX_ENGAGEMENT_COST)
+                                      if _cost_exceeded else "objective complete")
+                            self._auto_continue_count = 0
+                            self._auto_save()
+                            stop_msg = (
+                                f"*[Autonomous run halted — {reason} reached "
+                                f"(${_cost:.2f} spent, {self.state.flags and len(self.state.flags) or 0} flag(s)). "
+                                f"Send a follow-up to resume manually.]*"
+                            )
+                            return f"{response_text}\n\n{stop_msg}" if response_text else stop_msg
+
                         if is_autonomous and auto_continues < max_continues and not self._should_stop:
                             self._auto_continue_count = auto_continues + 1
                             self._hud_session_num += 1
@@ -1168,10 +1251,15 @@ Rules:
             _raw_tool_text = "\n".join(_session_output[-20:]) if _session_output else ""
             self._update_resume_point(response_text, raw_tool_output=_raw_tool_text)
 
-            # Parse credentials from agent output into engagement state
+            # Parse credentials into engagement state. Scan BOTH the narrative AND the
+            # raw tool output — harvested creds (e.g. an AWS_ACCESS_KEY_ID/SECRET pair
+            # from an env dump or callback) appear in tool results, not the agent's
+            # summary, so narrative-only parsing silently dropped them.
             try:
                 creds_before = len(self.state.credentials)
-                self.state.parse_credentials_from_text(response_text)
+                self.state.parse_credentials_from_text(response_text, source="interactive")
+                if _raw_tool_text:
+                    self.state.parse_credentials_from_text(_raw_tool_text, source="tool_output")
                 # Auto-register any new credentials in the vault
                 if len(self.state.credentials) > creds_before:
                     self._vault.register_from_engagement(self.state)
@@ -1187,7 +1275,13 @@ Rules:
 
             # CTF mode: detect flag capture and mark engagement SOLVED
             if self.state.engagement_mode == "ctf":
-                self._check_ctf_flags(response_text)
+                self._check_ctf_flags(response_text, raw_tool_output=_raw_tool_text)
+
+            # Record explicit dead-end conclusions so resumes don't re-derive them.
+            try:
+                self.state.scan_and_record_dead_ends(response_text)
+            except Exception:
+                pass
 
             # Auto-extract attack primitives from the full session output.
             # Use accumulated tool results + thinking (not just the final response text,
@@ -1257,66 +1351,22 @@ Rules:
          "New attack surface discovered. Enumerate the new endpoints/parameters before exploitation."),
     ]
 
-    def _check_ctf_flags(self, response_text: str) -> None:
-        """Detect CTF flag captures in agent output and mark engagement SOLVED.
+    def _check_ctf_flags(self, response_text: str, raw_tool_output: str = "") -> None:
+        """Detect CTF flag captures and persist them via the shared engagement logic.
 
-        Looks for 32-char hex strings (HTB format) near 'root.txt' or 'user.txt' mentions.
-        When both flags are found, marks the engagement as complete.
+        Delegates to Engagement.scan_and_record_flags(), which writes flags to the
+        *serialized* ``flags`` field (the old code wrote a transient ``_ctf_flags``
+        that never survived a save, leaving flags:{} on disk), grounds values against
+        raw tool output, labels user/root conservatively (no more lone-hex→root
+        mislabel), and marks the engagement solved only when the flag goal is met.
         """
-        import re as _re
-
-        # Look for 32-char hex strings (standard HTB flag format)
-        flag_pattern = r'\b([a-f0-9]{32})\b'
-        flags_found = _re.findall(flag_pattern, response_text.lower())
-
-        if not flags_found:
+        try:
+            recorded = self.state.scan_and_record_flags(
+                response_text, raw_output=raw_tool_output or "")
+        except Exception:
             return
-
-        # Check if flags are associated with root.txt or user.txt
-        text_lower = response_text.lower()
-        has_root = "root.txt" in text_lower or "root flag" in text_lower
-        has_user = "user.txt" in text_lower or "user flag" in text_lower
-
-        # Store flags in state
-        if not hasattr(self.state, "_ctf_flags"):
-            self.state._ctf_flags = {}
-
-        if has_root and flags_found:
-            self.state._ctf_flags["root"] = flags_found[0]
-        if has_user and flags_found:
-            # If multiple flags found, user flag is typically the one NOT associated with root
-            user_flag = flags_found[-1] if len(flags_found) > 1 else flags_found[0]
-            if user_flag != self.state._ctf_flags.get("root"):
-                self.state._ctf_flags["user"] = user_flag
-
-        # Also detect standalone flag reporting (agent just outputs the flag)
-        for flag in flags_found:
-            if flag not in self.state._ctf_flags.values():
-                if "root" not in self.state._ctf_flags:
-                    self.state._ctf_flags["root"] = flag
-                elif "user" not in self.state._ctf_flags:
-                    self.state._ctf_flags["user"] = flag
-
-        # Log individual flag captures
-        if has_root and self.state._ctf_flags.get("root"):
-            self._log.flag_captured("root", self.state._ctf_flags["root"])
-        if has_user and self.state._ctf_flags.get("user"):
-            self._log.flag_captured("user", self.state._ctf_flags["user"])
-
-        # Check if engagement is complete
-        if self.state._ctf_flags.get("root") or (has_root and flags_found):
-            flags = self.state._ctf_flags
-            self.state.resume_point = (
-                f"OBJECTIVE COMPLETE — CTF SOLVED. "
-                f"root.txt: {flags.get('root', 'unknown')}. "
-                f"user.txt: {flags.get('user', 'unknown')}. "
-                f"Do NOT continue. Engagement is finished."
-            )
-            self.state.resume_priority = 100  # Max priority — never overwrite
-            note = f"SOLVED: CTF complete. Flags: {flags}"
-            if not any("SOLVED" in n for n in self.state.notes):
-                self.state.notes.append(note)
-            self._auto_save()
+        for label, value in recorded.items():
+            self._log.flag_captured(label, value)
 
     def _update_resume_point(self, response_text: str,
                              raw_tool_output: str = "") -> None:
@@ -1349,6 +1399,13 @@ Rules:
                 if not re.search(pattern, raw_lower):
                     continue  # Agent claims milestone but tool output doesn't support it
 
+            # State corroboration: terminal claims (root/DA/SYSTEM, priority >= 90)
+            # must be backed by a recorded flag or compromised host — a narrative
+            # "I have root" with empty state is a hallucination that would set a
+            # false objective and spawn expensive autonomous cycles.
+            if not self.state.milestone_corroborated(priority):
+                continue
+
             new_point = template.format(
                 target=self.state.target,
                 match=pattern[:30],
@@ -1368,6 +1425,17 @@ Rules:
             self.state.resume_point = new_point
             self.state.resume_priority = priority
             self._log.milestone("redops", priority, template.split(".")[0])
+
+            # Corroborate access in typed state: a grounded shell/RCE/privesc milestone
+            # means we hold a foothold. Recording it here is what later lets a genuine
+            # root claim pass milestone_corroborated() instead of being rejected.
+            if priority >= 50:
+                try:
+                    self.state.add_compromised_host(
+                        self.state.target or "target", ip=self.state.target or "",
+                        access_level=("root" if priority >= 80 else "user"))
+                except Exception:
+                    pass
 
             # Auto-learn: ingest successful technique into RAG (background)
             try:
@@ -1395,6 +1463,9 @@ Rules:
         """
         if self.state.target:
             try:
+                # Keep the persisted session id in sync with the live one so a
+                # restart can --resume the same Claude conversation thread.
+                self.state.session_id = self._session_id
                 self.state.save()
                 self._engagement_mgr._set_active(self.state.target, self.state.engagement_mode)
             except Exception:
@@ -1404,6 +1475,10 @@ Rules:
         """Clear conversation history but keep engagement state."""
         self.conversation_history = []
         self._session_id = ""
+        try:
+            self.state.session_id = ""
+        except Exception:
+            pass
 
     def compact_history(self, keep_last: int = 10):
         """Trim conversation history."""

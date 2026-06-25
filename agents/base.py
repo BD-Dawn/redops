@@ -104,6 +104,30 @@ class StuckDetector:
             r"\bsearchsploit\b", r"\bmetasploit\b", r"\bmsfconsole\b",
             r"\bpoc\b", r"\bexploit[-/]", r"CVE-\d{4}-\d+",
         ]),
+        ("cloud_exploit", [
+            r"\baws\b\s+(sqs|s3|sts|iam|secretsmanager|ssm|lambda|ec2)",
+            r"\bboto3\b", r"\blocalstack\b",
+            r"169\.254\.169\.254", r"metadata.*iam",
+            r"\baws\b.*send-message", r"\baws\b.*get-object",
+            r"\baws\b.*put-object", r"\baws\b.*receive-message",
+        ]),
+        ("post_exploit", [
+            r"\bpython3?\b\s+-c\b", r"\bperl\b\s+-e\b",
+            r"\bruby\b\s+-e\b", r"\bnode\b\s+-e\b",
+            r"\bbase64\s+-d\b.*\|\s*(bash|sh|python)",
+            r"\brev(erse)?\s*shell\b", r"\bnc\b.*-e\b",
+            r"\bmkfifo\b", r"\b/dev/tcp/",
+            r"import\s+socket.*connect", r"import\s+subprocess",
+            r"\bcurl\b.*\|\s*(bash|sh|python)",
+            r"\bwget\b.*-O\s*-\s*\|\s*(bash|sh)",
+        ]),
+        ("ssrf", [
+            r"\bcurl\b.*\burl=", r"gopher://",
+            r"dict://", r"\bssrf\b",
+            r"\bcurl\b.*localhost:\d+",
+            r"\bcurl\b.*127\.0\.0\.1",
+            r"\bcurl\b.*\bfetch\b.*url",
+        ]),
         ("recon_general", [
             r"\bcurl\b.*-[sIvk]", r"\bwget\b",
             r"\bwhatweb\b", r"\bwappalyzer\b",
@@ -129,6 +153,9 @@ class StuckDetector:
         "cve_exploit": 6,
         "sqli": 8,
         "ssti": 6,
+        "cloud_exploit": 6,
+        "post_exploit": 7,
+        "ssrf": 5,
     }
     # Fallback for categories not listed above
     CATEGORY_TURN_LIMIT = int(os.getenv("REDOPS_CATEGORY_TURNS", "5"))
@@ -136,7 +163,8 @@ class StuckDetector:
     # Minimum recon categories that should be attempted before heavy exploitation.
     # param_tamper is recon-tier: you should probe parameters BEFORE trying injection.
     _RECON_CATEGORIES = {"port_scan", "web_enum", "subdomain_enum", "param_tamper"}
-    _EXPLOIT_CATEGORIES = {"sqli", "brute_force", "xss", "lfi_rfi", "ssti", "cve_exploit"}
+    _EXPLOIT_CATEGORIES = {"sqli", "brute_force", "xss", "lfi_rfi", "ssti", "cve_exploit",
+                           "cloud_exploit", "post_exploit", "ssrf"}
 
     def __init__(self, agent_name: str, engagement_dir: Path | None = None):
         self.agent_name = agent_name
@@ -152,6 +180,8 @@ class StuckDetector:
         self.exhausted_categories: set[str] = set()
         # Whether we've warned about incomplete recon
         self._recon_warning_sent: bool = False
+        # Milestone counter — reset per dispatch, tracks progress to gate Pattern 6
+        self._milestones_at_check: int = 0
 
     def to_dict(self) -> dict:
         """Serialize detector state for persistence across dispatches."""
@@ -390,7 +420,34 @@ class StuckDetector:
                     f"Complete enumeration before continuing exploitation attempts."
                 )
 
+        # --- Pattern 6: Cross-category grinding without milestones ---
+        # Catches the case where the agent cycles through multiple categories
+        # (e.g., cloud_exploit → post_exploit → ssrf → cloud_exploit) without
+        # any engagement milestone (new creds, new host, flag). Each category
+        # stays under its limit, but total turns burned is excessive.
+        total_classified = sum(len(t) for t in self.category_turns.values())
+        if turn >= 10 and total_classified >= 8:
+            active_cats = [cat for cat, t in self.category_turns.items()
+                           if len(t) >= 2 and cat not in self.exhausted_categories]
+            if len(active_cats) >= 2:
+                milestones = self._milestones_at_check
+                if milestones == 0:
+                    cats_str = ", ".join(f"{c}({len(self.category_turns[c])})" for c in active_cats)
+                    self.pivot_warnings_sent += 1
+                    return (
+                        f"STRATEGIC LOOP DETECTED: {total_classified} classified turns across "
+                        f"{len(active_cats)} categories ({cats_str}) with no engagement milestone "
+                        f"(no new credentials, compromised hosts, or flags). "
+                        f"The agent is cycling between approaches that all fail. "
+                        f"MANDATORY: Write a standalone script to automate the current exploit chain, "
+                        f"or pivot to a completely different attack vector."
+                    )
+
         return None
+
+    def record_milestone(self) -> None:
+        """Record that a meaningful engagement milestone occurred (cred found, host compromised, etc.)."""
+        self._milestones_at_check += 1
 
     def approach_summary(self) -> str:
         """Return a structured summary of approaches tried, for injection into prompts."""
@@ -1059,6 +1116,14 @@ This is a red team engagement simulating a real adversary.
                     if result_content:
                         self._detect_defenses(result_content)
 
+                    # Check for milestones in tool output to inform stuck detector
+                    if result_content and len(result_content) > 20:
+                        _rc_lower = result_content.lower()
+                        for _mp, _mpat in self._MILESTONES:
+                            if re.search(_mpat, _rc_lower):
+                                stuck.record_milestone()
+                                break
+
                     # Feed errors to stuck detector
                     is_error = event.get("is_error", False)
                     if is_error and result_content:
@@ -1254,6 +1319,32 @@ This is a red team engagement simulating a real adversary.
             # Auto-update resume checkpoint based on milestones
             self._update_resume_point(response_text)
 
+            # CTF flag write-back + dead-end memory — same shared engagement logic the
+            # interactive agent uses, so orchestrator runs persist flags/hosts too.
+            if getattr(self.state, "engagement_mode", "ctf") == "ctf":
+                try:
+                    recorded = self.state.scan_and_record_flags(
+                        response_text, raw_output=response_text)
+                    for _label, _value in recorded.items():
+                        self._log.flag_captured(_label, _value)
+                except Exception:
+                    pass
+            try:
+                self.state.scan_and_record_dead_ends(response_text)
+            except Exception:
+                pass
+
+            # Parse credentials into typed state — orchestrator sub-agents never did
+            # this, so harvested creds (AWS keys, passwords) found during a dispatch
+            # were lost. Scan the raw tool output too, where env dumps / callbacks land.
+            try:
+                self.state.parse_credentials_from_text(response_text, source=self.AGENT_NAME)
+                _raw = "\n\n".join(_session_output[-20:]) if _session_output else ""
+                if _raw and _raw != response_text:
+                    self.state.parse_credentials_from_text(_raw, source="tool_output")
+            except Exception:
+                pass
+
             # Persist session so we can --resume after restart
             self._save_session()
 
@@ -1318,6 +1409,11 @@ This is a red team engagement simulating a real adversary.
                 continue
             match = re.search(pattern, text_lower)
             if match:
+                # Terminal claims (root/DA/SYSTEM, priority >= 90) must be backed
+                # by recorded state (a flag or compromised host) — a narrative-only
+                # "I have root" is a hallucination that sets a false objective.
+                if not self.state.milestone_corroborated(priority):
+                    continue
                 label = self._MILESTONE_LABELS.get(priority, "Progress checkpoint")
                 # Extract context around the match
                 start = max(0, match.start() - 80)
@@ -1331,6 +1427,15 @@ This is a red team engagement simulating a real adversary.
                 )
                 self.state.resume_priority = priority
                 self._log.milestone(self.AGENT_NAME, priority, label)
+                # Corroborate the foothold in typed state so a later root claim passes
+                # milestone_corroborated() (see the same logic in agent.py).
+                if priority >= 50:
+                    try:
+                        self.state.add_compromised_host(
+                            self.state.target or "target", ip=self.state.target or "",
+                            access_level=("root" if priority >= 80 else "user"))
+                    except Exception:
+                        pass
                 # Persist immediately
                 try:
                     self.state.save()

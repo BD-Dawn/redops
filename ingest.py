@@ -9,7 +9,10 @@ from pypdf import PdfReader
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.console import Console
 
-from config import PDF_DIR, DATA_DIR, CHROMA_DIR, ARTICLES_DIR, CHUNK_SIZE, CHUNK_OVERLAP
+from config import (
+    PDF_DIR, DATA_DIR, CHROMA_DIR, ARTICLES_DIR, CHUNK_SIZE, CHUNK_OVERLAP,
+    get_embedding_function,
+)
 
 SLIVER_HELP_FILE = DATA_DIR / "sliver_v173_help.txt"
 
@@ -192,6 +195,7 @@ def ingest():
     collection = client.create_collection(
         name="redops",
         metadata={"description": "Red Team Ops knowledge base + Sliver C2 reference"},
+        embedding_function=get_embedding_function(),
     )
 
     all_docs = []
@@ -335,7 +339,9 @@ def ingest_incremental(file_path: Path):
     collection = None
     for name in ("redops", "crto"):
         try:
-            collection = client.get_collection(name)
+            collection = client.get_collection(
+                name, embedding_function=get_embedding_function()
+            )
             break
         except Exception:
             continue

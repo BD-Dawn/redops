@@ -29,11 +29,20 @@ def get_evidence_dir(target: str) -> Path:
     return d
 
 # Claude Code CLI
-MODEL = os.getenv("REDOPS_MODEL", "claude-opus-4-8")
+MODEL = os.getenv("REDOPS_MODEL", "claude-opus-4-6")
 MODEL_EXPLOIT = os.getenv("REDOPS_MODEL_EXPLOIT", "claude-sonnet-4-6")  # Faster model for CTF exploitation turns
 MODEL_FAST = os.getenv("REDOPS_MODEL_FAST", "claude-haiku-4-5-20251001")  # For parsing/extraction (cheap, high-volume)
 MODEL_PLANNER = os.getenv("REDOPS_MODEL_PLANNER", "claude-sonnet-4-6")  # For batch planning (needs instruction-following)
 MAX_TURNS = int(os.getenv("REDOPS_MAX_TURNS", "25"))       # Interactive agent turn cap
+
+# --- Autonomous run safety limits (prevent runaway --auto spend) ------------
+# A single CTF box previously burned $20+ over 3h because --auto refilled a
+# 40-continuation budget with no cost ceiling and kept grinding past a (false)
+# "root achieved" milestone. These bound the blast radius.
+MAX_AUTO_CONTINUES = int(os.getenv("REDOPS_MAX_CONTINUES", "8"))          # non-CTF auto-continues
+MAX_AUTO_CONTINUES_CTF = int(os.getenv("REDOPS_MAX_CONTINUES_CTF", "12")) # CTF (was 40)
+MAX_ENGAGEMENT_COST = float(os.getenv("REDOPS_MAX_COST", "25.0"))         # USD hard ceiling; stops --auto regardless of budget
+CTF_FLAG_GOAL = int(os.getenv("REDOPS_CTF_FLAG_GOAL", "2"))               # stop --auto once this many flags are recorded (user+root)
 AGENT_MAX_TURNS = int(os.getenv("REDOPS_AGENT_MAX_TURNS", "3"))  # Micro-agent dispatch limit
 CHAIN_MAX_TURNS = int(os.getenv("REDOPS_CHAIN_TURNS", "12"))     # Chain execution turn budget (bypass batch planner)
 SOFT_TURN_LIMIT = int(os.getenv("REDOPS_SOFT_TURNS", "2"))       # Strategy reassessment trigger
@@ -53,7 +62,40 @@ CHUNK_OVERLAP = 200     # overlap between chunks
 
 # Retrieval
 TOP_K = 6               # number of chunks to retrieve (reduced from 8 to cut context bloat)
-RAG_MAX_DISTANCE = 1.15  # discard chunks with distance above this (tuned: 1.3 -> 1.05 -> 1.15 for terminology variance)
+RAG_MAX_DISTANCE = float(os.getenv("REDOPS_RAG_MAX_DISTANCE", "1.35"))  # discard chunks above this distance
+# History: 1.3 -> 1.05 -> 1.15 -> 1.35. all-MiniLM-L6-v2 produces high absolute
+# distances; real on-topic hits routinely land at 1.2-1.35, so a tight cap
+# silently starved retrieval (returned []). retriever.py must NOT re-clamp this.
+
+# --- Vector store embedding function ---------------------------------------
+# CRITICAL: every ChromaDB collection handle (ingest, retrieval, learning) MUST
+# use this SAME embedding function. Passing no embedding_function lets Chroma's
+# implicit default drift between processes/library versions, which silently
+# embeds new content into an incompatible vector space — chunks then become
+# permanently unretrievable (this is exactly what broke the cloud-pentesting
+# ingest: 1408 chunks landed in a different space than the query path).
+# Pin the explicit ONNX all-MiniLM-L6-v2 model — the same model the original
+# knowledge base was embedded with. Do NOT swap implementations (e.g. to
+# sentence-transformers) without re-embedding the ENTIRE collection.
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+_embedding_function = None
+
+
+def get_embedding_function():
+    """Return the shared ChromaDB embedding function (singleton).
+
+    Always pass this to client.get_collection / create_collection / get_or_create
+    for the redops knowledge base so every code path embeds identically.
+    """
+    global _embedding_function
+    if _embedding_function is None:
+        from chromadb.utils import embedding_functions
+        # ONNXMiniLM_L6_V2 is the concrete model behind Chroma's historical
+        # DefaultEmbeddingFunction (verified cosine-identical). Pinning the
+        # explicit class freezes the model even if Chroma changes its default.
+        _embedding_function = embedding_functions.ONNXMiniLM_L6_V2()
+    return _embedding_function
 
 # Findings DB — DEPRECATED: per-engagement now. Use engagement.findings_db_path instead.
 # Kept for backward compat with code that hasn't been migrated yet.

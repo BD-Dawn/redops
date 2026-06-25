@@ -32,7 +32,7 @@ def _run_async(fn, *args, **kwargs):
     except RuntimeError:
         pass  # Pool shut down — ignore
 
-from config import CHROMA_DIR, FINDINGS_DIR, EVIDENCE_DIR, ENGAGEMENTS_DIR, MODEL_FAST
+from config import CHROMA_DIR, FINDINGS_DIR, EVIDENCE_DIR, ENGAGEMENTS_DIR, MODEL_FAST, get_embedding_function
 
 # Chunk size for learned content — shorter than base KB since these are focused
 _LEARNED_CHUNK_SIZE = 1200
@@ -65,7 +65,9 @@ def _get_collection():
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     for name in ["redops", "crto"]:
         try:
-            return client.get_collection(name)
+            return client.get_collection(
+                name, embedding_function=get_embedding_function()
+            )
         except Exception:
             continue
     collections = client.list_collections()
