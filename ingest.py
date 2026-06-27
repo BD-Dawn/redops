@@ -138,7 +138,65 @@ def chunk_sliver_help(text: str) -> list[dict]:
     return chunks
 
 
-def parse_article_metadata(filename: str) -> dict:
+def classify_modes(filename: str, text: str = "") -> str:
+    """Classify which engagement modes an article is relevant to.
+
+    Returns a comma-separated string of modes (ChromaDB metadata values
+    must be scalars, not lists). Articles default to "all" if no specific
+    mode signals are detected.
+
+    Mode signals:
+      ctf   — CTF writeups, HTB/THM walkthroughs, flag capture techniques
+      le    — live environment techniques (general pentesting)
+      rt    — red team specific: defense evasion, OPSEC, adversary emulation,
+              persistence, phishing, C2, exfiltration
+    """
+    name = filename.lower()
+    combined = (name + " " + text[:3000]).lower()
+
+    modes = set()
+
+    # CTF signals
+    ctf_patterns = ["htb_", "thm_", "ctf_", "hackthebox", "tryhackme",
+                    "flag capture", "root.txt", "user.txt", "flag.txt"]
+    if any(p in combined for p in ctf_patterns):
+        modes.add("ctf")
+
+    # Red Team signals — defense evasion, OPSEC, adversary emulation
+    rt_patterns = ["defense_evasion", "adversary_emulation", "amsi",
+                   "etw_patch", "unhooking", "process_injection",
+                   "lolbin", "phishing", "payload_development",
+                   "c2_", "exfiltration", "persistence", "evasion",
+                   "red_team", "opsec", "detection risk",
+                   "infrastructure_", "redirector", "domain_reputation"]
+    if any(p in combined for p in rt_patterns):
+        modes.add("rt")
+
+    # General pentesting / LE signals (broad techniques)
+    le_patterns = ["privilege_escalation", "privesc", "credential",
+                   "pivoting", "tunneling", "lateral_movement",
+                   "enumeration", "exploitation", "post_exploitation",
+                   "portswigger", "sql_injection", "xss", "ssrf",
+                   "container_escape", "cloud_", "iam_", "adcs",
+                   "tool_", "mssql", "kerberos", "bloodhound"]
+    if any(p in combined for p in le_patterns):
+        modes.add("le")
+
+    # If nothing matched, it's general knowledge — available to all modes
+    if not modes:
+        return "all"
+
+    # Technique articles (privesc, tools, web vulns) are useful across all modes
+    # Only restrict if the article is EXCLUSIVELY one mode
+    if modes == {"ctf"}:
+        return "ctf"
+    if modes == {"rt"}:
+        return "rt,le"  # RT techniques also useful in LE
+    # Mixed or LE-only → available to all
+    return "all"
+
+
+def parse_article_metadata(filename: str, text: str = "") -> dict:
     """Extract metadata from an article markdown filename."""
     stem = Path(filename).stem
     title = stem.replace("_", " ").title()
@@ -146,6 +204,7 @@ def parse_article_metadata(filename: str) -> dict:
         "title": title,
         "filename": filename,
         "content_type": "article",
+        "modes": classify_modes(filename, text),
     }
 
 
@@ -240,6 +299,7 @@ def ingest():
                         "content_type": metadata["content_type"],
                         "chunk_index": i,
                         "source": metadata["filename"],
+                        "modes": "all",
                     })
 
                 progress.advance(task)
@@ -262,11 +322,12 @@ def ingest():
             all_docs.append(chunk["text"])
             all_ids.append(doc_id)
             all_metadatas.append({
-                "module": 9000,  # High number to distinguish from PDF modules
+                "module": 9000,
                 "title": chunk["title"],
                 "content_type": "sliver_reference",
                 "chunk_index": chunk["chunk_index"],
                 "source": "sliver_v173_help.txt",
+                "modes": "all",
             })
 
         console.print(f"  Extracted [green]{len(sliver_chunks)}[/green] Sliver command chunks")
@@ -275,12 +336,12 @@ def ingest():
     if articles:
         console.print("\nProcessing articles...")
         for article_path in articles:
-            metadata = parse_article_metadata(article_path.name)
             text = article_path.read_text(errors="replace").strip()
 
             if not text or len(text) < 50:
                 continue
 
+            metadata = parse_article_metadata(article_path.name, text)
             chunks = chunk_text(text)
             file_stem = article_path.stem
 
@@ -301,6 +362,7 @@ def ingest():
                     "content_type": "article",
                     "chunk_index": i,
                     "source": metadata["filename"],
+                    "modes": metadata["modes"],
                 })
 
         article_chunks = sum(1 for m in all_metadatas if m["content_type"] == "article")
@@ -355,11 +417,11 @@ def ingest_incremental(file_path: Path):
     suffix = file_path.suffix.lower()
 
     if suffix == ".md":
-        metadata = parse_article_metadata(file_path.name)
         text = file_path.read_text(errors="replace").strip()
         if not text or len(text) < 50:
             console.print("[yellow]File too short, skipping.[/yellow]")
             return
+        metadata = parse_article_metadata(file_path.name, text)
         chunks = chunk_text(text)
         file_stem = file_path.stem
         # Remove old chunks for this article if re-ingesting
@@ -381,6 +443,7 @@ def ingest_incremental(file_path: Path):
                 "content_type": "article",
                 "chunk_index": i,
                 "source": metadata["filename"],
+                "modes": metadata["modes"],
             })
 
     elif suffix == ".pdf":
@@ -418,6 +481,48 @@ def ingest_incremental(file_path: Path):
         console.print(f"Total chunks in collection: {collection.count()}")
 
 
+def backfill_modes():
+    """Patch all existing chunks that lack a 'modes' metadata field with 'all'."""
+    import chromadb
+
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    collection = None
+    for name in ("redops", "crto"):
+        try:
+            collection = client.get_collection(
+                name, embedding_function=get_embedding_function()
+            )
+            break
+        except Exception:
+            continue
+    if collection is None:
+        console.print("[red]No collection found. Run a full ingest first.[/red]")
+        sys.exit(1)
+
+    all_data = collection.get(include=["metadatas"])
+    ids_to_patch = []
+    metas_to_patch = []
+    for chunk_id, meta in zip(all_data["ids"], all_data["metadatas"]):
+        if "modes" not in meta:
+            meta["modes"] = "all"
+            ids_to_patch.append(chunk_id)
+            metas_to_patch.append(meta)
+
+    if not ids_to_patch:
+        console.print("[green]All chunks already have modes metadata.[/green]")
+        return
+
+    batch_size = 5000
+    for i in range(0, len(ids_to_patch), batch_size):
+        end = min(i + batch_size, len(ids_to_patch))
+        collection.update(
+            ids=ids_to_patch[i:end],
+            metadatas=metas_to_patch[i:end],
+        )
+
+    console.print(f"[bold green]Done![/bold green] Backfilled 'modes' on {len(ids_to_patch)} chunks.")
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -427,9 +532,16 @@ if __name__ == "__main__":
         type=str,
         help="Path to a single .md or .pdf file to add without full rebuild",
     )
+    parser.add_argument(
+        "--backfill-modes",
+        action="store_true",
+        help="Patch existing chunks with modes='all' metadata for mode filtering",
+    )
     args = parser.parse_args()
 
-    if args.incremental:
+    if args.backfill_modes:
+        backfill_modes()
+    elif args.incremental:
         ingest_incremental(Path(args.incremental))
     else:
         ingest()

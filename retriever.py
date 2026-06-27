@@ -138,8 +138,10 @@ class KnowledgeBase:
         )
 
     @staticmethod
-    def _build_where(scope: str | None, module_filter: int | None) -> dict | None:
-        """Build the ChromaDB metadata filter enforcing engagement isolation.
+    def _build_where(scope: str | None, module_filter: int | None,
+                     mode: str | None = None) -> dict | None:
+        """Build the ChromaDB metadata filter enforcing engagement isolation
+        and mode-based relevance filtering.
 
         Curated reference knowledge (``source`` != "learned") is global and
         always retrievable. Engagement-derived "learned" chunks are private to
@@ -148,6 +150,10 @@ class KnowledgeBase:
 
         With no scope, ALL learned content is excluded — a safe default that
         also hides legacy learned chunks ingested before scoping existed.
+
+        When *mode* is set (ctf/le/redteam), articles are filtered to those
+        tagged for the mode or "all". Chunks without a ``modes`` field
+        (legacy, PDFs, Sliver ref) always pass.
         """
         clauses: list[dict] = []
         if scope:
@@ -159,6 +165,16 @@ class KnowledgeBase:
             clauses.append({"source": {"$ne": "learned"}})
         if module_filter is not None:
             clauses.append({"module": {"$eq": module_filter}})
+        # Mode-based filtering: only retrieve articles tagged for this mode
+        # Map engagement modes to tag values used in article metadata
+        if mode:
+            mode_tag = {"ctf": "ctf", "le": "le", "redteam": "rt"}.get(mode, mode)
+            clauses.append({"$or": [
+                {"modes": {"$eq": "all"}},            # universal articles
+                {"modes": {"$eq": mode_tag}},          # exact mode match
+                {"modes": {"$eq": f"{mode_tag},le"}},  # combo tags like "rt,le"
+                {"modes": {"$eq": f"le,{mode_tag}"}},
+            ]})
         if len(clauses) == 1:
             return clauses[0]
         return {"$and": clauses}
@@ -170,6 +186,7 @@ class KnowledgeBase:
         module_filter: int | None = None,
         max_distance: float = _EFFECTIVE_MAX_DISTANCE,
         scope: str | None = None,
+        mode: str | None = None,
     ) -> list[dict]:
         """Search the knowledge base and return relevant chunks with metadata.
 
@@ -179,13 +196,15 @@ class KnowledgeBase:
         *scope* is the active engagement_id; it isolates engagement-derived
         "learned" knowledge so one target's distilled techniques never surface
         in another engagement.
+
+        *mode* (ctf/le/redteam) filters articles by engagement mode tag.
         """
         # Check cache
-        cache_key = f"{query}|{n_results}|{module_filter}|{max_distance}|{scope}"
+        cache_key = f"{query}|{n_results}|{module_filter}|{max_distance}|{scope}|{mode}"
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        where = self._build_where(scope, module_filter)
+        where = self._build_where(scope, module_filter, mode)
 
         results = self.collection.query(
             query_texts=[query],
@@ -216,6 +235,7 @@ class KnowledgeBase:
         n_results: int = TOP_K,
         max_distance: float = _EFFECTIVE_MAX_DISTANCE,
         scope: str | None = None,
+        mode: str | None = None,
     ) -> list[dict]:
         """Search multiple queries in a single ChromaDB call.
 
@@ -223,11 +243,12 @@ class KnowledgeBase:
         search() in a loop since ChromaDB batches the embedding computation.
 
         *scope* (active engagement_id) isolates engagement-derived knowledge.
+        *mode* (ctf/le/redteam) filters articles by engagement mode tag.
         """
         if not queries:
             return []
 
-        where = self._build_where(scope, None)
+        where = self._build_where(scope, None, mode)
 
         # Split into cached and uncached
         cached_hits = []
@@ -265,7 +286,7 @@ class KnowledgeBase:
                         "distance": distance,
                     })
                 # Cache individual query results
-                cache_key = f"{uncached_queries[qi]}|{n_results}|None|{max_distance}|{scope}"
+                cache_key = f"{uncached_queries[qi]}|{n_results}|None|{max_distance}|{scope}|{mode}"
                 self._cache[cache_key] = query_hits
                 cached_hits.extend(query_hits)
 
@@ -288,21 +309,23 @@ class KnowledgeBase:
         module_filter: int | None = None,
         max_distance: float = _EFFECTIVE_MAX_DISTANCE,
         scope: str | None = None,
+        mode: str | None = None,
     ) -> list[dict]:
         """Decompose *query* into sub-queries and merge deduplicated results.
 
         Uses batch_search when possible for better performance.
 
         *scope* (active engagement_id) isolates engagement-derived knowledge.
+        *mode* (ctf/le/redteam) filters articles by engagement mode tag.
         """
         sub_queries = decompose_query(query)
 
         if len(sub_queries) == 1 and not module_filter:
             return self.search(sub_queries[0], n_results=n_results,
-                               max_distance=max_distance, scope=scope)
+                               max_distance=max_distance, scope=scope,
+                               mode=mode)
 
         if module_filter:
-            # Can't batch with module filter — fall back to sequential
             per_query = max(3, n_results // len(sub_queries))
             all_hits: list[dict] = []
             seen: set[str] = set()
@@ -310,7 +333,8 @@ class KnowledgeBase:
             for sq in sub_queries:
                 for hit in self.search(sq, n_results=per_query,
                                        module_filter=module_filter,
-                                       max_distance=max_distance, scope=scope):
+                                       max_distance=max_distance, scope=scope,
+                                       mode=mode):
                     key = hit["text"][:120]
                     if key not in seen:
                         seen.add(key)
@@ -319,10 +343,10 @@ class KnowledgeBase:
             all_hits.sort(key=lambda h: h["distance"] or 0)
             return all_hits[:n_results]
 
-        # Batch search all sub-queries in one ChromaDB call
         per_query = max(3, n_results // len(sub_queries))
         return self.batch_search(sub_queries, n_results=per_query,
-                                 max_distance=max_distance, scope=scope)
+                                 max_distance=max_distance, scope=scope,
+                                 mode=mode)
 
     def format_context(self, hits: list[dict]) -> str:
         """Format search results into a context string for the LLM."""

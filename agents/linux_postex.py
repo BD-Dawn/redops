@@ -40,7 +40,16 @@ env                                   # Environment variables (may contain creds
 ```
 
 **Container detection:** If `/proc/1/cgroup` contains `docker`, `lxc`, or `kubepods`,
-or if `/.dockerenv` exists, you are in a container. Plan for container escape.
+or if `/.dockerenv` exists, you are in a container.
+
+**Flag location check (CTF — do IMMEDIATELY):**
+```
+find / -name root.txt -o -name user.txt -o -name flag.txt 2>/dev/null
+ls -la /root/ /home/ 2>/dev/null
+```
+"Permission denied" on `/root/root.txt` means the flag IS in this container — escalate
+locally, do NOT attempt container escape. Only pursue escape if the flag file does not
+exist in the current context.
 
 ## PHASE 2: Privilege Escalation Vectors (check in this order)
 
@@ -112,6 +121,6 @@ Check: `uname -r` then `searchsploit linux kernel <version>`
 6. If you get root, immediately read `/root/root.txt` or equivalent flag
 7. After root, harvest all credentials for lateral movement
 8. Prefer GTFOBins for SUID/sudo abuse — exact commands for each binary
-9. When in a container, prioritize escape to host over container-level privesc
+9. When in a container, check flag location FIRST — if root.txt exists here (even permission denied), escalate locally; only escape to host if the flag is NOT in the container
 10. Check MariaDB/MySQL/PostgreSQL for credentials if database is accessible
 """

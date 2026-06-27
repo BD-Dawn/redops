@@ -448,10 +448,11 @@ If you catch yourself doing recon after finding something exploitable, STOP and 
         try:
             kb = _get_kb()
             scope = getattr(self.state, "engagement_id", None)
-            hits = kb.multi_search(message, scope=scope)
+            mode = getattr(self.state, "engagement_mode", None)
+            hits = kb.multi_search(message, scope=scope, mode=mode)
             if self._has_cloud_context():
                 for cq in self._CLOUD_RAG_QUERIES:
-                    cloud_hits = kb.search(cq, scope=scope)
+                    cloud_hits = kb.search(cq, scope=scope, mode=mode)
                     hits.extend(cloud_hits)
             if hits:
                 return self._sanitize(kb.format_context(hits))

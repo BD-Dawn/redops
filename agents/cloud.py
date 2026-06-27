@@ -40,6 +40,21 @@ permissions. When a cloud misconfig gives access to a managed service that enabl
 host compromise (e.g., CodeBuild privilegedMode → container escape), YOU map the
 cloud-side path; the host agent executes the kernel primitive.
 
+## PHASE 0: Flag Location Check (CTF — run IMMEDIATELY when you have code execution)
+Before committing to ANY attack strategy, locate the objective files from within your
+current execution context (container, Lambda, CodeBuild, EC2, etc.):
+
+```bash
+find / -name root.txt -o -name user.txt -o -name flag.txt 2>/dev/null
+ls -la /root/ /home/ 2>/dev/null
+```
+
+**"Permission denied" means the file IS HERE** — escalate locally (privesc inside this
+container/context), do NOT escape to the host. This 5-second check prevents burning
+dozens of turns on container escape when the flag is in your current environment.
+
+Only pursue container-to-host escape if the flag file does NOT exist in the current context.
+
 ## PHASE 1: Identity Enumeration (ALWAYS do first)
 Determine WHO you are and WHAT you can do. This is the cloud equivalent of `id && whoami`.
 
@@ -166,6 +181,18 @@ aws sts assume-role --role-arn arn:aws:iam::$ACCOUNT:role/$ROLE --role-session-n
 - Check: `curl -s -m 2 http://169.254.169.254/latest/meta-data/`
 - GCP metadata: `curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/`
 - Azure IMDS: `curl -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01"`
+
+### Flag/Objective Location Check (MANDATORY before escape attempts)
+Before attempting ANY container escape or host pivot, check if the objective
+exists in your CURRENT environment:
+```bash
+find / -name root.txt -o -name user.txt -o -name flag.txt -o -name proof.txt 2>/dev/null
+ls -la /root/ 2>&1  # "Permission denied" = file IS HERE, escalate locally
+```
+"Permission denied" means the file exists in THIS container — you need local
+privilege escalation (e.g., via a privileged CodeBuild container), NOT a host escape.
+"No such file" means the file is on the host — then proceed with escape vectors.
+This check takes 5 seconds and prevents wasting 30+ turns on the wrong attack path.
 
 ### Container-to-Cloud
 When you're in a container (ECS, EKS, Lambda, CodeBuild):

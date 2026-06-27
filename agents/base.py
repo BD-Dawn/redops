@@ -104,6 +104,20 @@ class StuckDetector:
             r"\bsearchsploit\b", r"\bmetasploit\b", r"\bmsfconsole\b",
             r"\bpoc\b", r"\bexploit[-/]", r"CVE-\d{4}-\d+",
         ]),
+        # cloud_escape MUST be before cloud_exploit — escape-specific patterns
+        # are more specific than general AWS CLI commands
+        ("cloud_escape", [
+            # Container escape vectors
+            r"docker\.sock", r"/var/run/docker", r"\bnsenter\b",
+            r"mount.*cgroup", r"release_agent", r"notify_on_release",
+            r"/proc/sys/kernel/modprobe", r"/proc/sys/kernel/core_pattern",
+            r"\bupperdir\b", r"\boverlay\b.*mount",
+            # Cloud-to-host escape
+            r"hot-reload", r"hot\.reload", r"lambda.*layer",
+            r"volume.*mount", r"mountpoints", r"privilegedmode",
+            # Namespace escape
+            r"/proc/1/root", r"/proc/\d+/ns/", r"\bunshare\b", r"\bsetns\b",
+        ]),
         ("cloud_exploit", [
             r"\baws\b\s+(sqs|s3|sts|iam|secretsmanager|ssm|lambda|ec2)",
             r"\bboto3\b", r"\blocalstack\b",
@@ -153,6 +167,7 @@ class StuckDetector:
         "cve_exploit": 6,
         "sqli": 8,
         "ssti": 6,
+        "cloud_escape": 5,
         "cloud_exploit": 6,
         "post_exploit": 7,
         "ssrf": 5,
@@ -164,7 +179,7 @@ class StuckDetector:
     # param_tamper is recon-tier: you should probe parameters BEFORE trying injection.
     _RECON_CATEGORIES = {"port_scan", "web_enum", "subdomain_enum", "param_tamper"}
     _EXPLOIT_CATEGORIES = {"sqli", "brute_force", "xss", "lfi_rfi", "ssti", "cve_exploit",
-                           "cloud_exploit", "post_exploit", "ssrf"}
+                           "cloud_escape", "cloud_exploit", "post_exploit", "ssrf"}
 
     def __init__(self, agent_name: str, engagement_dir: Path | None = None):
         self.agent_name = agent_name
@@ -385,6 +400,22 @@ class StuckDetector:
                 untried = all_categories - tried_categories
                 suggest_str = ", ".join(sorted(untried)[:4]) if untried else "all categories attempted"
 
+                if category == "cloud_escape":
+                    return (
+                        f"CONTAINER/CLOUD ESCAPE EXHAUSTED: {len(turns_list)} turns spent on "
+                        f"container/cloud escape vectors without breakthrough. STOP.\n"
+                        f"  Before trying more escape vectors:\n"
+                        f"  (1) Check if the objective (flag/target file) exists in your CURRENT "
+                        f"container: `find / -name root.txt -o -name user.txt 2>/dev/null`. "
+                        f"Permission denied = file IS HERE, escalate locally.\n"
+                        f"  (2) Check if you can create a PRIVILEGED container via cloud APIs "
+                        f"(CodeBuild privilegedMode, ECS with capabilities). A new privileged "
+                        f"container is often the intended path, not escaping the current "
+                        f"unprivileged one.\n"
+                        f"  Other categories tried: {tried_str}\n"
+                        f"  MANDATORY: Your next command must NOT be in the '{category}' category."
+                    )
+
                 return (
                     f"STRATEGIC LOOP DETECTED: {len(turns_list)} turns spent on '{category}' "
                     f"without breakthrough. This attack class is exhausted — STOP trying "
@@ -597,7 +628,8 @@ class BaseAgent:
                 return ""
             # Single batched call instead of N sequential multi_search calls
             scope = getattr(self.state, "engagement_id", None)
-            hits = kb.batch_search(queries, n_results=6, scope=scope)
+            mode = getattr(self.state, "engagement_mode", None)
+            hits = kb.batch_search(queries, n_results=6, scope=scope, mode=mode)
             if hits:
                 return self._sanitize(kb.format_context(hits[:6]))
         except Exception:
