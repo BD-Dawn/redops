@@ -90,6 +90,31 @@ class RedTeamAgent:
     _synthesis_cache: str = ""
     _synthesis_ran: bool = False
 
+    def reset_for_new_engagement(self):
+        """Wipe all session state that could bleed between engagements.
+
+        Called when switching to a genuinely new target. Leaves self.state
+        alone — the caller must set that before or after this call.
+        """
+        from agents.base import StuckDetector
+        self._session_id = ""
+        self.conversation_history = []
+        self.opsec_log = []
+        self._synthesis_cache = ""
+        self._synthesis_ran = False
+        self._turn_count = 0
+        self._last_session_output = []
+        self._hud_last_cmd = ""
+        self._hud_phase = "recon"
+        self._hud_cumulative_cost = 0.0
+        self._hud_session_num = 0
+        self._stuck = StuckDetector.load("interactive", self.state.dir)
+        self._log = EngagementLogger(self.state.dir, self.state.engagement_mode)
+        _vault_enabled = self.state.engagement_mode in ("le", "redteam")
+        self._vault = SecretVault(self.state.dir, enabled=_vault_enabled)
+        if _vault_enabled and self.state.target:
+            self._vault.register_from_engagement(self.state)
+
     def _run_synthesis_preflight(self) -> str:
         """Run synthesis agent to find combinatorial attack paths.
 

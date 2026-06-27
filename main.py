@@ -2313,8 +2313,7 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
                 # Reset agent state if we just nuked the current engagement
                 if target == agent.state.target:
                     agent.state = Engagement(target, agent.state.engagement_mode)
-                    agent._session_id = ""
-                    agent.conversation_history = []
+                    agent.reset_for_new_engagement()
                     orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                     agent.orchestrator = orchestrator
                 console.print(f"[success]Nuked engagement: {target} ({len(deleted)} items deleted)[/success]")
@@ -2328,9 +2327,7 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
             _mgr = agent._engagement_mgr
             eng = _mgr.create(new_target, old_mode)
             agent.state = eng
-            agent._session_id = ""
-            agent.conversation_history = []
-            # Rebuild orchestrator with new engagement (gets per-engagement paths)
+            agent.reset_for_new_engagement()
             orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
             agent.orchestrator = orchestrator
             import config as _cfg
@@ -2357,18 +2354,34 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
             console.print("[warning]No active engagement to retarget.[/warning]")
         else:
             old_ip = agent.state.target
-            agent.state.retarget(arg.strip())
-            # Reset agent sessions (old conversation context has wrong IP)
+            _new = arg.strip()
+            agent.state.retarget(_new)
             agent._session_id = ""
             agent.conversation_history = []
-            # Rebuild orchestrator with updated state
+            # Set resume point so agent picks up where it left off
+            if not agent.state.resume_point:
+                _resume_parts = []
+                if agent.state.phases.current:
+                    _resume_parts.append(f"Phase: {agent.state.phases.current.value}")
+                if agent.state.credentials:
+                    _resume_parts.append(f"{len(agent.state.credentials)} creds")
+                if agent.state.compromised_hosts:
+                    _resume_parts.append(f"{len(agent.state.compromised_hosts)} hosts compromised")
+                if agent.state.flags:
+                    _resume_parts.append(f"Flags: {', '.join(f'{k}={v}' for k,v in agent.state.flags.items())}")
+                if _resume_parts:
+                    agent.state.resume_point = f"Retargeted {old_ip}→{_new}. State: {'; '.join(_resume_parts)}. Continue from where we left off."
+            # Rebuild subsystems for new engagement dir
+            from agents.base import StuckDetector
+            agent._stuck = StuckDetector.load("interactive", agent.state.dir)
+            agent._log = EngagementLogger(agent.state.dir, agent.state.engagement_mode)
             orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
             agent.orchestrator = orchestrator
-            # Update active engagement pointer
             agent._engagement_mgr._set_active(agent.state.target, agent.state.engagement_mode)
-            console.print(f"[success]Retargeted: {old_ip} → {arg.strip()}[/success]")
+            console.print(f"[success]Retargeted: {old_ip} → {_new} (all state preserved)[/success]")
             console.print(f"[dim]  {len(agent.state.credentials)} creds, {len(agent.state.capabilities)} capabilities, {len(agent.state.notes)} notes carried over[/dim]")
-            console.print(f"[dim]  Agent sessions reset. Evidence symlinked from previous engagement.[/dim]")
+            if agent.state.resume_point:
+                console.print(f"[dim]  Resume: {agent.state.resume_point}[/dim]")
 
     elif command == "/target":
         if not arg:
@@ -2378,31 +2391,51 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
         else:
             new_target = arg.strip()
             old_target = agent.state.target
-            # If changing to a DIFFERENT target, create/switch engagement via
-            # EngagementManager to get a clean state. This prevents state
-            # contamination (credentials, notes, etc.) from the old target.
+            # If changing to a DIFFERENT target, ask whether it's a retarget
+            # (same box, IP changed) or a genuinely new target.
             if old_target and new_target != old_target:
-                _mgr = agent._engagement_mgr
-                old_mode = agent.state.engagement_mode
-                switched = _mgr.switch(new_target)
-                if switched:
-                    agent.state = switched
-                    console.print(f"[success]Switched engagement: {new_target} "
-                                  f"({len(agent.state.notes)} notes, "
-                                  f"{len(agent.state.credentials)} creds)[/success]")
+                console.print(f"[yellow]Current target is [bold]{old_target}[/bold]. Is [bold]{new_target}[/bold]:[/yellow]")
+                console.print(f"[dim]  [1] Same box, IP changed (keep all state)[/dim]")
+                console.print(f"[dim]  [2] New target (fresh engagement)[/dim]")
+                _choice = session.prompt(HTML("<b>[1/2]</b> ")).strip()
+                if _choice == "1":
+                    # Retarget — preserve state
+                    agent.state.retarget(new_target)
+                    agent._session_id = ""
+                    agent.conversation_history = []
+                    if not agent.state.resume_point:
+                        _resume_parts = []
+                        if agent.state.phases.current:
+                            _resume_parts.append(f"Phase: {agent.state.phases.current.value}")
+                        if agent.state.credentials:
+                            _resume_parts.append(f"{len(agent.state.credentials)} creds")
+                        if agent.state.compromised_hosts:
+                            _resume_parts.append(f"{len(agent.state.compromised_hosts)} hosts compromised")
+                        if _resume_parts:
+                            agent.state.resume_point = f"Retargeted {old_target}→{new_target}. State: {'; '.join(_resume_parts)}. Continue from where we left off."
+                    orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
+                    agent.orchestrator = orchestrator
+                    agent._engagement_mgr._set_active(agent.state.target, agent.state.engagement_mode)
+                    console.print(f"[success]Retargeted: {old_target} → {new_target} (all state preserved)[/success]")
+                    console.print(f"[dim]  {len(agent.state.credentials)} creds, {len(agent.state.capabilities)} capabilities, {len(agent.state.notes)} notes carried over[/dim]")
                 else:
-                    eng = _mgr.create(new_target, old_mode)
-                    agent.state = eng
-                    console.print(f"[success]New engagement: {new_target}[/success]")
-                agent._session_id = ""
-                agent.conversation_history = []
-                # Rebuild stuck detector for new engagement dir
-                from agents.base import StuckDetector
-                agent._stuck = StuckDetector.load("interactive", agent.state.dir)
-                agent._log = EngagementLogger(agent.state.dir, agent.state.engagement_mode)
-                # Rebuild orchestrator with clean state
-                orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
-                agent.orchestrator = orchestrator
+                    # New target — switch or create
+                    _mgr = agent._engagement_mgr
+                    old_mode = agent.state.engagement_mode
+                    switched = _mgr.switch(new_target)
+                    if switched:
+                        agent.state = switched
+                        console.print(f"[success]Switched engagement: {new_target} "
+                                      f"({len(agent.state.notes)} notes, "
+                                      f"{len(agent.state.credentials)} creds)[/success]")
+                    else:
+                        eng = _mgr.create(new_target, old_mode)
+                        agent.state = eng
+                        console.print(f"[success]New engagement: {new_target}[/success]")
+                    # Full reset — no bleedover from previous engagement
+                    agent.reset_for_new_engagement()
+                    orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
+                    agent.orchestrator = orchestrator
             else:
                 # First target or same target — set on current engagement
                 agent.state.set_target(new_target)
@@ -2713,9 +2746,9 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
             eng = agent._engagement_mgr.switch(name)
             if eng:
                 agent.state = eng
-                # Resume the saved conversation thread for this engagement.
+                agent.reset_for_new_engagement()
+                # Restore saved session ID for this engagement (resume thread)
                 agent._session_id = getattr(eng, "session_id", "") or ""
-                agent.conversation_history = []
                 orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                 agent.orchestrator = orchestrator
                 import config as _cfg
@@ -3147,28 +3180,59 @@ def main():
                     and (_target_intent or _same_subnet or not _is_rfc1918)
                 )
                 # ── Layer 2: Confirmation gate ──
-                # Unless explicit target-intent language is present, ask for confirmation
-                # before switching/creating an engagement. This prevents accidental triggers
-                # from pasted content that survived sanitization.
-                _has_explicit_intent = bool(_target_intent or _retarget_intent)
-                if _should_switch and not _has_explicit_intent:
-                    console.print(f"[yellow]Detected IP [bold]{_new_ip}[/bold] — start new engagement?[/yellow]")
-                    _confirm = session.prompt(HTML("<b>[y/N]</b> ")).strip().lower()
-                    if _confirm not in ("y", "yes"):
-                        console.print("[dim]Ignored. Pass input to agent as-is.[/dim]")
-                        _should_switch = False
+                # When there's an active engagement and a new IP is detected,
+                # always ask whether it's the same box (retarget) or a new target.
+                # This prevents losing engagement state on HTB box resets / VPN reconnects.
+                _is_retarget = False
+                if _should_switch and agent.state.target:
+                    # Auto-detect retarget intent from language
+                    if _retarget_intent:
+                        _is_retarget = True
+                    else:
+                        console.print(f"[yellow]Detected IP [bold]{_new_ip}[/bold] — current target is [bold]{agent.state.target}[/bold][/yellow]")
+                        console.print(f"[dim]  [1] Same box, IP changed (keep all state)[/dim]")
+                        console.print(f"[dim]  [2] New target (fresh engagement)[/dim]")
+                        console.print(f"[dim]  [3] Ignore (pass to agent as-is)[/dim]")
+                        _choice = session.prompt(HTML("<b>[1/2/3]</b> ")).strip()
+                        if _choice == "1":
+                            _is_retarget = True
+                        elif _choice == "2":
+                            pass  # _should_switch stays True, _is_retarget stays False
+                        else:
+                            _should_switch = False
+                elif _should_switch and not agent.state.target:
+                    pass  # No existing target — proceed with new engagement
 
                 # Retarget: same engagement, new IP
-                if _should_switch and _retarget_intent and agent.state.target:
+                if _should_switch and _is_retarget and agent.state.target:
                     old_ip = agent.state.target
                     agent.state.retarget(_new_ip)
                     agent._session_id = ""
                     agent.conversation_history = []
+                    # Set resume point so agent picks up where it left off
+                    if not agent.state.resume_point:
+                        _resume_parts = []
+                        if agent.state.phases.current:
+                            _resume_parts.append(f"Phase: {agent.state.phases.current.value}")
+                        if agent.state.credentials:
+                            _resume_parts.append(f"{len(agent.state.credentials)} creds")
+                        if agent.state.compromised_hosts:
+                            _resume_parts.append(f"{len(agent.state.compromised_hosts)} hosts compromised")
+                        if agent.state.flags:
+                            _resume_parts.append(f"Flags: {', '.join(f'{k}={v}' for k,v in agent.state.flags.items())}")
+                        if _resume_parts:
+                            agent.state.resume_point = f"Retargeted {old_ip}→{_new_ip}. State: {'; '.join(_resume_parts)}. Continue from where we left off."
+                    # Rebuild subsystems for new engagement dir
+                    from agents.base import StuckDetector
+                    agent._stuck = StuckDetector.load("interactive", agent.state.dir)
+                    agent._log = EngagementLogger(agent.state.dir, agent.state.engagement_mode)
                     orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                     agent.orchestrator = orchestrator
                     agent._engagement_mgr._set_active(agent.state.target, agent.state.engagement_mode)
                     console.print(f"[success]Retargeted: {old_ip} → {_new_ip} (all state preserved)[/success]")
-                    console.print(f"[dim]  {len(agent.state.credentials)} creds, {len(agent.state.capabilities)} capabilities carried over[/dim]")
+                    console.print(f"[dim]  {len(agent.state.credentials)} creds, {len(agent.state.capabilities)} capabilities, {len(agent.state.notes)} notes carried over[/dim]")
+                    if agent.state.resume_point:
+                        console.print(f"[dim]  Resume: {agent.state.resume_point}[/dim]")
                 # New engagement: different target entirely
                 elif _should_switch:
                     _mgr = agent._engagement_mgr
@@ -3177,15 +3241,13 @@ def main():
                     switched = _mgr.switch(_new_ip)
                     if switched:
                         agent.state = switched
-                        # Preserve the loaded engagement's mode (LE/CTF/RT) — don't override with previous session's mode
                         console.print(f"[success]Switched engagement: {_new_ip} ({len(agent.state.notes)} notes, {len(agent.state.credentials)} creds)[/success]")
                     else:
                         eng = _mgr.create(_new_ip, old_mode)
                         agent.state = eng
                         console.print(f"[success]New engagement: {_new_ip}[/success]")
-                    agent._session_id = ""
-                    agent.conversation_history = []
-                    # Rebuild orchestrator with new engagement
+                    # Full reset — no bleedover from previous engagement
+                    agent.reset_for_new_engagement()
                     orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                     agent.orchestrator = orchestrator
 
@@ -3248,9 +3310,9 @@ def main():
                             _found = _mgr.switch(_candidate)
                             if _found and _found.target != agent.state.target:
                                 agent.state = _found
-                                # Resume the saved conversation thread for this engagement.
+                                agent.reset_for_new_engagement()
+                                # Restore saved session ID for this engagement
                                 agent._session_id = getattr(_found, "session_id", "") or ""
-                                agent.conversation_history = []
                                 orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
                                 agent.orchestrator = orchestrator
                                 import config as _cfg
