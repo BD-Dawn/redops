@@ -290,7 +290,12 @@ class RedTeamAgent:
 - **Verify access with commands.** evil-winrm shows PS prompt before auth completes — run `whoami` to confirm.
 - **Enumerate before exploiting.** Vhost enum, parameter discovery, value manipulation BEFORE injection.
 - **Parameter manipulation first.** Change values (`?id=2`, `?token=0`, `?file=../../etc/passwd`) before sqlmap.
-- **Same category = same category.** sqlmap with different flags is still sqli. Different wordlist is still brute_force.
+- **Same category = same category.** sqlmap with different flags is still sqli. Swapping wordlists in an
+  ONLINE login brute-force (hydra/spray) is the same futile approach — don't loop it.
+- **Hash cracking is bounded — don't rabbit-hole.** Standard attempt: rockyou, then rockyou + `best64.rule`
+  (one heavier rule like `dive.rule` is the ceiling). If that doesn't crack it, STOP — record the hash
+  uncracked and pivot to another vector. Do NOT escalate into masks, incremental brute-force, or giant
+  wordlists: an uncracked hash is almost never the intended path, and grinding it burns the whole engagement.
 - **Batch indirect execution.** If using DLL hijack/scheduled tasks with wait cycles, run ALL checks
   in ONE payload (whoami + dir + query > output files) instead of one check per deployment cycle.
 - **You have full sudo on Kali.** Use it. Don't pivot to alternative tools for permission errors.

