@@ -728,38 +728,61 @@ container. Only pursue container escape if the flag does NOT exist in your curre
 This is a REAL target. Vulnerabilities may or may NOT exist.
 
 **Rules of engagement:**
-- Operate within defined scope STRICTLY — do not test out-of-scope assets
-- Document ALL findings using the standard finding template (see CLAUDE.md)
-- Report vulnerabilities with proper severity ratings (CVSS 3.1)
-- Provide actionable remediation guidance
-- Collect evidence (screenshots, request/response pairs, PoC commands)
-- Test for impact but do NOT cause damage or disruption
+- Operate within defined scope STRICTLY. Out-of-scope = HARD STOP. Touching an
+  out-of-scope asset can void the entire engagement. If unsure whether a host is
+  in scope, do NOT touch it.
+- Test for impact but do NOT cause damage, disruption, or data destruction
+- Do NOT persist access, do NOT exfiltrate real data, do NOT pivot beyond scope
 
-**PoC requirements (MANDATORY for all findings):**
-Every finding MUST include a reproducible proof-of-concept. A finding without a PoC is
-not a finding — it's a guess.
-- For each vulnerability discovered, immediately attempt to create a working PoC
-- PoC format: a single curl command, script, or step-by-step request sequence that
-  an operator can replay to reproduce the issue
-- If you CAN reproduce it: include the exact command and its output as evidence
-- If you CANNOT reproduce it: clearly state this in the finding. Label it as
-  UNCONFIRMED and describe exactly what the operator needs to do to verify it
-  (tools, auth state, timing, browser requirements)
-- Never claim a vulnerability is confirmed without running a PoC yourself
-- Save PoC scripts to the evidence directory as executable .sh files
+### Methodical triage workflow (work the funnel, top to bottom)
+1. **Map** — enumerate in-scope assets, services, and the application surface
+   (endpoints, params, auth flows, roles, tech stack). Build the attack surface
+   before testing anything.
+2. **Prioritize** — rank by likely impact × likelihood. Auth, access control,
+   injection, and SSRF on the core app outrank cosmetic issues. Spend time where
+   material bugs live.
+3. **Test one vector at a time** — form a hypothesis, test it, record the result.
+   Don't spray payloads blindly.
+4. **Time-box** — if a vector isn't yielding after thorough testing, mark it tested
+   and move on. Don't rabbit-hole.
+5. **Verify before recording** — a hypothesis is not a finding until you've proven it.
+
+### Material-impact threshold (what is worth reporting)
+Triage every candidate by REAL impact, not theoretical risk:
+- **Material (record as medium/high/critical, pursue a PoC):** auth bypass, broken
+  access control / IDOR, injection (SQLi/cmd/SSTI), SSRF, RCE, sensitive data
+  exposure, account takeover — anything an attacker materially gains from.
+- **Low-hanging fruit (record as low/info, do NOT treat as a headline finding):**
+  missing security headers, verbose banners, autocomplete-on, cookie flags absent
+  with no demonstrable impact, self-XSS, best-practice deviations, theoretical
+  weaknesses with no exploit path.
+- Record low/info findings so they're not lost — but they are NOTES for the
+  operator to review, not report material. The operator decides whether any low/info
+  item matters in context. Do NOT pad the report with them or inflate their severity.
+- A wrong "high" is worse than a missed "low." When severity is uncertain, rate it DOWN.
+
+### PoC gate (a finding is not reportable until proven)
+Every MATERIAL finding MUST have a reproducible proof-of-concept. Findings are
+held back from the report until their PoC is confirmed.
+- For each material vuln, immediately attempt a working PoC and run it yourself
+- PoC format: a single curl command, script, or exact step-by-step request sequence
+  an operator can replay. Save PoC scripts to the evidence directory as .sh files.
+- CONFIRMED: you ran it and reproduced the issue — include the command and its output
+- MANUAL: you genuinely can't automate it (needs a browser, specific auth, timing) —
+  record explicit manual repro steps so the operator can verify
+- UNCONFIRMED/PENDING: you suspect it but haven't proven it — record it, but it stays
+  out of the report until verified. Never claim "confirmed" without running the PoC.
+- Attach a CVSS 3.1 vector to material findings so severity is defensible.
 
 **Assumptions:**
-- The target MAY be fully patched and secure — "no findings" is a valid result
-- Not every service is exploitable — prioritize based on real risk, not CTF logic
-- False positives are worse than missed findings in bug bounty context
-- Time-box techniques — if a vector isn't yielding after thorough testing, move on
+- The target MAY be fully patched and secure — "no findings" is a valid, honest result
+- False positives are worse than missed findings in a bug bounty context
+- Duplicate-looking findings should be consolidated, not double-reported
 
 **Objectives:**
-- Identify and document all exploitable vulnerabilities within scope
-- Provide reproducible PoC for every finding (or explicit manual PoC instructions)
-- Write findings to /findings/ using the standard template
-- Generate a final report summarizing risk posture
-- Do NOT persist access, do NOT exfiltrate real data, do NOT disrupt services
+- Identify and prove material vulnerabilities within scope, each with a replayable PoC
+- Keep low/info as operator notes, not report headlines
+- Generate a submission-ready report of REPORTABLE findings only
 """
 
     _REDTEAM_MODE_PROMPT = """
@@ -1054,7 +1077,33 @@ This is a red team engagement simulating a real adversary.
                                 "reasons": opsec_result.reasons,
                                 "agent": self.AGENT_NAME,
                                 "time": datetime.now().isoformat(),
+                                "action": "killed" if opsec_result.scope_violation else "",
                             })
+                            # HARD SCOPE BLOCK (LE/RedTeam): touching an out-of-scope
+                            # asset can void a bug-bounty or breach the ROE. Kill the
+                            # session immediately and force a scope-corrected restart —
+                            # mirrors the CTF anti-cheat hard stop.
+                            if opsec_result.scope_violation:
+                                if on_status:
+                                    on_status(
+                                        f"[{self.AGENT_NAME}] SCOPE VIOLATION — "
+                                        f"{opsec_result.scope_detail}"
+                                    )
+                                if on_progress:
+                                    on_progress({
+                                        "type": "scope_violation",
+                                        "agent": self.AGENT_NAME,
+                                        "command": last_cmd_str,
+                                        "detail": opsec_result.scope_detail,
+                                    })
+                                proc.kill()
+                                response_text += (
+                                    f"\n\n*[SESSION KILLED — SCOPE VIOLATION: "
+                                    f"{opsec_result.scope_detail}. The target is OUT OF SCOPE. "
+                                    f"Only operate against in-scope assets defined in the engagement scope. "
+                                    f"Do NOT retry this target.]*"
+                                )
+                                break
                             if on_status:
                                 if opsec_result.score >= LEVEL_HIGH:
                                     on_status(

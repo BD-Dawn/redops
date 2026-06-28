@@ -880,14 +880,41 @@ Rules:
                             _is_ctf = getattr(self.state, "engagement_mode", "ctf") == "ctf"
                             if not _is_ctf:
                                 # Full OPSEC scoring for LE/Red Team modes
-                                opsec_result = score_command(cmd_str)
+                                opsec_result = score_command(
+                                    cmd_str,
+                                    scope_enforcer=getattr(self.state, "scope_enforcer", None),
+                                )
                                 self.opsec_log.append({
                                     "command": cmd_str[:200],
                                     "score": opsec_result.score,
                                     "level": opsec_result.level_name,
                                     "reasons": opsec_result.reasons,
                                     "time": datetime.now().isoformat(),
+                                    "action": "killed" if opsec_result.scope_violation else "",
                                 })
+                                # HARD SCOPE BLOCK (LE/RedTeam): out-of-scope assets can
+                                # void a bounty or breach the ROE. Kill immediately and
+                                # force a scope-corrected restart.
+                                if opsec_result.scope_violation:
+                                    if on_status:
+                                        on_status(self._format_hud(
+                                            self._turn_count,
+                                            f"SCOPE VIOLATION — {opsec_result.scope_detail}"
+                                        ))
+                                    if on_progress:
+                                        on_progress({
+                                            "type": "scope_violation",
+                                            "agent": "redops",
+                                            "command": cmd_str,
+                                            "detail": opsec_result.scope_detail,
+                                        })
+                                    proc.kill()
+                                    response_text += (
+                                        f"\n\n*[SESSION KILLED — SCOPE VIOLATION: "
+                                        f"{opsec_result.scope_detail}. The target is OUT OF SCOPE. "
+                                        f"Only operate against in-scope assets. Do NOT retry this target.]*"
+                                    )
+                                    break
                                 if opsec_result.score >= LEVEL_HIGH:
                                     if on_status:
                                         on_status(self._format_hud(

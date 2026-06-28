@@ -54,14 +54,14 @@ class RedopsCompleter(Completer):
         "/save": "Save engagement state",
         "/load": "Switch to engagement: /load <target>",
         "/targets": "Show multi-target status table",
-        "/findings": "Query findings database",
+        "/findings": "Findings DB: summary | export | <host> | promote/note/cvss <id> | dupes | verify",
         "/engagements": "List all engagements with status",
         "/review": "Source code review: /review [path] [task]",
         "/research": "Research mode: /research <target|status|classify|bugs>",
         "/cve-sync": "Sync CVE intelligence: /cve-sync [--days N | --cve CVE-ID]",
         "/tasks": "Task ledger: add/start/done/fail/block/skip",
         "/ingest-url": "Fetch article and add to KB",
-        "/report": "Review/rewrite findings for submission quality",
+        "/report": "Review/rewrite findings, or export <platform> submission package",
         "/learn": "Learn from past engagements (retroactive RAG ingestion)",
         "/bounty": "Bounty monitor: start|stop|status|scan|filter|programs|history",
         "/quickstart": "Show the quick start guide",
@@ -979,6 +979,7 @@ def _handle_report(orchestrator: Orchestrator, arg: str) -> None:
         /report <filename>          Review a specific finding file
         /report fix                 Rewrite all findings to submission quality
         /report fix <filename>      Rewrite a specific finding file
+        /report export [platform]   Export reportable findings (hackerone|bugcrowd|generic)
     """
     from config import FINDINGS_DIR
 
@@ -986,6 +987,22 @@ def _handle_report(orchestrator: Orchestrator, arg: str) -> None:
     subcmd = parts[0].lower() if parts else ""
     target_file = ""
     mode = "review"
+
+    # Deterministic submission package from the findings DB (reportable only)
+    if subcmd == "export":
+        from findings_db import FindingsDB
+        platform = (parts[1].strip().lower() if len(parts) > 1 else "generic") or "generic"
+        db = FindingsDB()
+        package = db.export_for_platform(platform)
+        out_path = FINDINGS_DIR / f"submission_{platform}.md"
+        try:
+            FINDINGS_DIR.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(package)
+            console.print(f"[success]Submission package written: {out_path}[/success]")
+        except Exception as e:
+            console.print(f"[warning]Could not write file ({e}) — printing instead.[/warning]")
+        console.print(Markdown(package))
+        return
 
     if subcmd == "fix":
         mode = "rewrite"
@@ -1056,48 +1073,180 @@ def _handle_report(orchestrator: Orchestrator, arg: str) -> None:
 
 
 def _handle_findings(agent: RedTeamAgent, arg: str) -> None:
-    """Handle /findings command — query and display the findings database."""
+    """Handle /findings command — query, triage, and verify the findings database.
+
+    Usage:
+        /findings                 Triage summary (reportable / awaiting-PoC / notes)
+        /findings export          Full triaged markdown report
+        /findings <host>          Findings for a host
+        /findings promote <id>    Force a finding into the report (operator override)
+        /findings note <id>       Force a finding to notes / demote (operator override)
+        /findings cvss <id> <vec> Attach a CVSS 3.1 vector to a finding
+        /findings dupes           Show likely duplicate clusters
+        /findings verify          Dispatch the agent to PoC material findings (the gate)
+        /findings clear           Wipe the findings database
+    """
     from findings_db import FindingsDB
     db = FindingsDB()
 
     parts = arg.strip().split(maxsplit=1)
     subcmd = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    sev_color = {"critical": "danger", "high": "warning", "medium": "yellow",
+                 "low": "dim", "info": "dim"}
 
     if subcmd == "export":
-        report = db.export_markdown()
-        console.print(Markdown(report))
+        console.print(Markdown(db.export_markdown()))
+
     elif subcmd == "clear":
         db.clear()
         console.print("[success]Findings database cleared.[/success]")
+
+    elif subcmd in ("promote", "note", "demote"):
+        override = "promote" if subcmd == "promote" else "demote"
+        try:
+            fid = int(rest.split()[0])
+        except (ValueError, IndexError):
+            console.print(f"[warning]Usage: /findings {subcmd} <id>[/warning]")
+            return
+        if db.set_report_override(fid, override):
+            verb = "promoted into report" if override == "promote" else "moved to notes"
+            console.print(f"[success]Finding #{fid} {verb}.[/success]")
+        else:
+            console.print(f"[danger]No finding with id {fid}.[/danger]")
+
+    elif subcmd == "cvss":
+        bits = rest.split(maxsplit=1)
+        if len(bits) < 2:
+            console.print("[warning]Usage: /findings cvss <id> <CVSS:3.1/...>[/warning]")
+            return
+        try:
+            fid = int(bits[0])
+        except ValueError:
+            console.print("[warning]Finding id must be a number.[/warning]")
+            return
+        if db.set_cvss(fid, bits[1]):
+            console.print(f"[success]CVSS vector set on finding #{fid}.[/success]")
+        else:
+            console.print(f"[danger]No finding with id {fid}.[/danger]")
+
+    elif subcmd == "dupes":
+        clusters = db.potential_duplicates()
+        if not clusters:
+            console.print("[dim]No likely duplicates detected.[/dim]")
+            return
+        console.print(f"[warning]{len(clusters)} possible duplicate cluster(s):[/warning]")
+        for cl in clusters:
+            console.print(f"  [dim]on {cl[0]['host']}:[/dim]")
+            for f in cl:
+                console.print(f"    #{f['id']} [{f['severity'].upper()}] {f['title'] or f['finding_type']}")
+
+    elif subcmd == "verify":
+        _verify_findings_poc(agent, db)
+
     elif subcmd:
-        # Treat as a host filter
-        findings = db.query(host=subcmd, limit=50)
+        # Treat as a host filter — show id + disposition
+        findings = db._all_with_disposition(host=subcmd)
         if findings:
             console.print(f"[dim]Findings for {subcmd}: {len(findings)}[/dim]")
             for f in findings:
                 port_str = f":{f['port']}" if f['port'] else ""
-                sev_color = {"critical": "danger", "high": "warning", "medium": "yellow", "low": "dim", "info": "dim"}.get(f['severity'], "dim")
+                col = sev_color.get(f['severity'], "dim")
+                disp = {"reportable": "[green]REPORT[/green]",
+                        "needs_poc": "[yellow]NEEDS-POC[/yellow]",
+                        "noted": "[dim]note[/dim]"}.get(f["disposition"], "")
                 console.print(
-                    f"  [{sev_color}][{f['severity'].upper()}][/{sev_color}] "
+                    f"  #{f['id']} [{col}][{f['severity'].upper()}][/{col}] {disp} "
                     f"{f['host']}{port_str} — {f['title'] or f['finding_type']}"
                 )
         else:
             console.print(f"[dim]No findings for {subcmd}.[/dim]")
+
     else:
-        # Summary view
-        hosts = db.get_hosts_with_findings()
+        # Triage summary
         total = db.count()
-        if hosts:
-            console.print(f"[dim]Findings database: {total} total findings across {len(hosts)} hosts[/dim]")
-            for h in hosts:
-                sev = h['max_severity']
-                sev_color = {"critical": "danger", "high": "warning", "medium": "yellow"}.get(sev, "dim")
-                console.print(
-                    f"  [{sev_color}]{h['host']}[/{sev_color}]: {h['finding_count']} findings "
-                    f"(max: {sev}, exploitable: {h['exploitable_count']})"
-                )
-        else:
+        if not total:
             console.print("[dim]No findings recorded yet.[/dim]")
+            return
+        reportable = db.reportable_findings()
+        needs = db.needs_poc()
+        noted = db.noted_findings()
+        console.print(
+            f"[dim]Findings: {total} total[/dim]  "
+            f"[green]{len(reportable)} reportable[/green] · "
+            f"[yellow]{len(needs)} awaiting PoC[/yellow] · "
+            f"[dim]{len(noted)} notes[/dim]"
+        )
+        if reportable:
+            console.print("\n[green]Reportable (material + proven PoC):[/green]")
+            for f in reportable:
+                col = sev_color.get(f['severity'], "dim")
+                console.print(f"  #{f['id']} [{col}][{f['severity'].upper()}][/{col}] "
+                              f"{f['host']} — {f['title'] or f['finding_type']}")
+        if needs:
+            console.print("\n[yellow]Awaiting PoC (held back by the gate — /findings verify):[/yellow]")
+            for f in needs:
+                col = sev_color.get(f['severity'], "dim")
+                console.print(f"  #{f['id']} [{col}][{f['severity'].upper()}][/{col}] "
+                              f"{f['host']} — {f['title'] or f['finding_type']}")
+        if noted:
+            console.print(f"\n[dim]Notes / low-hanging fruit: {len(noted)} "
+                          f"(/findings promote <id> to elevate)[/dim]")
+
+
+def _verify_findings_poc(agent: RedTeamAgent, db) -> None:
+    """Dispatch the agent to attempt a PoC for each material finding stuck at the gate.
+
+    The agent reproduces each, then records the result back to the findings DB so
+    confirmed findings become reportable. This is the active half of the PoC gate.
+    """
+    queue = db.needs_poc()
+    if not queue:
+        console.print("[success]Nothing awaiting PoC — all material findings are proven.[/success]")
+        return
+
+    listing = "\n".join(
+        f"- id={f['id']} [{f['severity'].upper()}] {f['host']}"
+        f"{(':' + str(f['port'])) if f['port'] else ''} — {f['title'] or f['finding_type']}"
+        f"\n  {(f['description'] or '')[:200]}"
+        for f in queue
+    )
+    db_path = db._db_path
+    task = (
+        "PoC VERIFICATION PASS. The following MATERIAL findings are recorded but unproven. "
+        "For each, attempt a reproducible proof-of-concept against the in-scope target. "
+        "Stay strictly in scope.\n\n"
+        f"{listing}\n\n"
+        "For EACH finding, after testing, update its status in the findings database by running:\n"
+        "```\n"
+        f"python3 -c \"import sys; sys.path.insert(0,'.'); from findings_db import FindingsDB, PocStatus; "
+        f"db=FindingsDB(); db.update_poc(<id>, PocStatus.CONFIRMED, poc_script='<exact reproduce command>')\"\n"
+        "```\n"
+        "Use PocStatus.CONFIRMED only if you reproduced it yourself. Use PocStatus.UNCONFIRMED if you "
+        "could not, or PocStatus.MANUAL with poc_instructions if it needs manual/browser steps. "
+        "Be honest — do not mark CONFIRMED without a working PoC.\n"
+        f"(The findings DB is at: {db_path})"
+    )
+
+    console.print(f"[dim]Dispatching PoC verification for {len(queue)} finding(s)...[/dim]")
+
+    def on_status(msg):
+        if _verbose_mode:
+            console.print(f"  [dim]{msg}[/dim]")
+
+    try:
+        output = agent.chat(task, on_status=on_status)
+        if output:
+            console.print(Markdown(output))
+    except Exception as e:
+        console.print(f"[danger]Verification error: {type(e).__name__}: {e}[/danger]")
+
+    # Re-report the gate after verification
+    remaining = db.needs_poc()
+    newly = len(queue) - len(remaining)
+    console.print(f"\n[success]Verification pass complete.[/success] "
+                  f"[green]{newly} newly proven[/green], [yellow]{len(remaining)} still pending[/yellow].")
 
 
 def _handle_cve_sync(arg: str, console) -> None:
