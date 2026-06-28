@@ -168,13 +168,16 @@ class KnowledgeBase:
         # Mode-based filtering: only retrieve articles tagged for this mode
         # Map engagement modes to tag values used in article metadata
         if mode:
-            mode_tag = {"ctf": "ctf", "le": "le", "redteam": "rt"}.get(mode, mode)
-            clauses.append({"$or": [
-                {"modes": {"$eq": "all"}},            # universal articles
-                {"modes": {"$eq": mode_tag}},          # exact mode match
-                {"modes": {"$eq": f"{mode_tag},le"}},  # combo tags like "rt,le"
+            mode_tag = {"ctf": "ctf", "le": "le", "redteam": "rt", "research": "research"}.get(mode, mode)
+            mode_or: list[dict] = [
+                {"modes": {"$eq": "all"}},
+                {"modes": {"$eq": mode_tag}},
+                {"modes": {"$eq": f"{mode_tag},le"}},
                 {"modes": {"$eq": f"le,{mode_tag}"}},
-            ]})
+            ]
+            if mode == "research":
+                mode_or.append({"modes": {"$eq": "rt,le"}})
+            clauses.append({"$or": mode_or})
         if len(clauses) == 1:
             return clauses[0]
         return {"$and": clauses}

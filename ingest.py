@@ -182,6 +182,15 @@ def classify_modes(filename: str, text: str = "") -> str:
     if any(p in combined for p in le_patterns):
         modes.add("le")
 
+    # Research mode signals — vuln research, fuzzing, CWE, exploit dev, patch diff
+    research_patterns = ["cwe-", "cwe_", "fuzzing", "harness", "crash_triage",
+                         "patch_diff", "bindiff", "diaphora", "exploitdev",
+                         "mitigation_bypass", "heap_overflow", "use_after_free",
+                         "reverse_engineer", "variant_hunt", "0-day", "0day",
+                         "byovd", "driver_vuln"]
+    if any(p in combined for p in research_patterns):
+        modes.add("research")
+
     # If nothing matched, it's general knowledge — available to all modes
     if not modes:
         return "all"
@@ -192,6 +201,8 @@ def classify_modes(filename: str, text: str = "") -> str:
         return "ctf"
     if modes == {"rt"}:
         return "rt,le"  # RT techniques also useful in LE
+    if modes == {"research"}:
+        return "research"
     # Mixed or LE-only → available to all
     return "all"
 
