@@ -65,6 +65,7 @@ class RedopsCompleter(Completer):
         "/learn": "Learn from past engagements (retroactive RAG ingestion)",
         "/bounty": "Bounty monitor: start|stop|status|scan|filter|programs|history",
         "/quickstart": "Show the quick start guide",
+        "/budget": "View or set engagement cost ceiling: /budget [amount]",
         "/fast": "Toggle fast mode (Sonnet for exploitation, Opus for planning)",
         "/verbose": "Toggle verbose progress mode",
         "/reset": "Clear conversation history",
@@ -2504,6 +2505,29 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
         if agent.state.autonomous:
             console.print("[warning]Claude will execute commands without permission prompts.[/warning]")
 
+    elif command == "/budget":
+        import config as _bcfg
+        _cost = getattr(agent.state, "total_cost", 0.0)
+        if arg.strip():
+            try:
+                new_ceil = float(arg.strip().lstrip("$"))
+                if new_ceil < _cost:
+                    console.print(f"[warning]Ceiling ${new_ceil:.2f} is below current spend ${_cost:.2f}[/warning]")
+                else:
+                    _bcfg.MAX_ENGAGEMENT_COST = new_ceil
+                    console.print(f"[success]Budget ceiling set: ${new_ceil:.2f}[/success]")
+            except ValueError:
+                console.print("[warning]Usage: /budget <amount> — e.g. /budget 50[/warning]")
+        else:
+            _ceil = _bcfg.MAX_ENGAGEMENT_COST
+            _pct = int(_cost / _ceil * 100) if _ceil > 0 else 0
+            _bar_len = 20
+            _filled = min(int(_pct / 5), _bar_len)
+            _bar = "█" * _filled + "░" * (_bar_len - _filled)
+            _color = "green" if _pct < 60 else ("yellow" if _pct < 85 else "red")
+            console.print(f"  [{_color}]${_cost:.2f} / ${_ceil:.2f}[/{_color}]  [{_bar}] {_pct}%")
+            console.print(f"[dim]  Set ceiling: /budget <amount>[/dim]")
+
     elif command == "/fast":
         agent.fast_mode = not agent.fast_mode
         if agent.fast_mode:
@@ -3530,8 +3554,50 @@ def main():
             _refresh_thread = threading.Thread(target=_refresh_loop, daemon=True)
             _refresh_thread.start()
 
+            def _prompt_budget_extension(cost_so_far: float, current_ceiling: float):
+                _refresh_stop.set()
+                if _verbose_ticker and _verbose_ticker.is_started:
+                    _verbose_ticker.stop()
+                if live.is_started:
+                    live.stop()
+                console.print(f"\n[bold yellow]  Budget ceiling reached: ${cost_so_far:.2f} / ${current_ceiling:.2f}[/bold yellow]")
+                _flags = len(agent.state.flags or {})
+                if _flags:
+                    console.print(f"[dim]  Flags captured: {_flags}[/dim]")
+                console.print(f"[dim]  Extend budget to continue the engagement.[/dim]\n")
+                _increments = [10, 25, 50]
+                for i, inc in enumerate(_increments, 1):
+                    console.print(f"  [{i}] +${inc}  (new ceiling: ${current_ceiling + inc:.2f})")
+                console.print(f"  [c] Custom amount")
+                console.print(f"  [s] Stop run\n")
+                while True:
+                    try:
+                        choice = console.input("[bold]  Extend budget? [/bold]").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        return None
+                    if choice == "s":
+                        return None
+                    if choice == "c":
+                        try:
+                            amt = float(console.input("  Amount to add: $").strip())
+                            if amt > 0:
+                                new = current_ceiling + amt
+                                console.print(f"[success]  Budget extended → ${new:.2f}[/success]\n")
+                                return new
+                        except (ValueError, EOFError, KeyboardInterrupt):
+                            console.print("[warning]  Invalid amount.[/warning]")
+                            continue
+                    if choice in ("1", "2", "3"):
+                        inc = _increments[int(choice) - 1]
+                        new = current_ceiling + inc
+                        console.print(f"[success]  Budget extended → ${new:.2f}[/success]\n")
+                        return new
+                    console.print("[dim]  Enter 1-3, c, or s[/dim]")
+
             try:
-                response = agent.chat(user_input + c2_context, on_status=update_status, on_progress=on_progress)
+                response = agent.chat(user_input + c2_context, on_status=update_status,
+                                      on_progress=on_progress,
+                                      on_budget_exceeded=_prompt_budget_extension)
             finally:
                 _refresh_stop.set()
                 _refresh_thread.join(timeout=2)

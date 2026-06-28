@@ -671,7 +671,8 @@ Rules:
 
         return ""
 
-    def chat(self, user_message: str, on_status=None, on_progress=None) -> str:
+    def chat(self, user_message: str, on_status=None, on_progress=None,
+             on_budget_exceeded=None) -> str:
         """Send a message to Claude Code and get a response.
 
         In autonomous mode, auto-continues when turn limit is hit instead of
@@ -683,6 +684,9 @@ Rules:
             on_status: Optional callback for status updates - on_status(msg: str)
             on_progress: Optional callback for verbose progress events - on_progress(event: dict)
                          Event types: "command", "output", "reasoning", "tool_use", "phase", "error"
+            on_budget_exceeded: Optional callback when cost ceiling is hit.
+                         Receives (cost_so_far, current_ceiling) and returns the
+                         new ceiling (float) to continue, or None to stop.
 
         Returns:
             Claude's response text
@@ -1040,6 +1044,7 @@ Rules:
                                         self._build_continue_prompt("stuck_restart", on_status=on_status),
                                         on_status=on_status,
                                         on_progress=on_progress,
+                                        on_budget_exceeded=on_budget_exceeded,
                                     )
                                 response_text = (
                                     f"**[TERMINATED — STUCK DETECTED]**\n{stuck_msg}\n\n"
@@ -1148,17 +1153,43 @@ Rules:
                         _cost = getattr(self.state, "total_cost", 0.0)
                         _cost_exceeded = _cost >= _config.MAX_ENGAGEMENT_COST
                         _objective_done = _is_ctf and self.state.ctf_objective_complete()
-                        if is_autonomous and (_cost_exceeded or _objective_done):
-                            reason = ("cost ceiling ${:.2f}".format(_config.MAX_ENGAGEMENT_COST)
-                                      if _cost_exceeded else "objective complete")
+                        if is_autonomous and _objective_done:
                             self._auto_continue_count = 0
                             self._auto_save()
                             stop_msg = (
-                                f"*[Autonomous run halted — {reason} reached "
-                                f"(${_cost:.2f} spent, {self.state.flags and len(self.state.flags) or 0} flag(s)). "
-                                f"Send a follow-up to resume manually.]*"
+                                f"*[Autonomous run halted — objective complete "
+                                f"(${_cost:.2f} spent, {len(self.state.flags or {})} flag(s)).]*"
                             )
                             return f"{response_text}\n\n{stop_msg}" if response_text else stop_msg
+
+                        if is_autonomous and _cost_exceeded:
+                            if on_budget_exceeded:
+                                new_ceiling = on_budget_exceeded(_cost, _config.MAX_ENGAGEMENT_COST)
+                                if new_ceiling is not None:
+                                    old_ceiling = _config.MAX_ENGAGEMENT_COST
+                                    _config.MAX_ENGAGEMENT_COST = float(new_ceiling)
+                                    self._log.info("budget_extended",
+                                                   old=f"${old_ceiling:.2f}",
+                                                   new=f"${new_ceiling:.2f}",
+                                                   cost=f"${_cost:.2f}")
+                                else:
+                                    self._auto_continue_count = 0
+                                    self._auto_save()
+                                    stop_msg = (
+                                        f"*[Autonomous run halted — operator declined budget extension "
+                                        f"(${_cost:.2f} spent, ceiling ${_config.MAX_ENGAGEMENT_COST:.2f}).]*"
+                                    )
+                                    return f"{response_text}\n\n{stop_msg}" if response_text else stop_msg
+                            else:
+                                self._auto_continue_count = 0
+                                self._auto_save()
+                                stop_msg = (
+                                    f"*[Autonomous run halted — cost ceiling "
+                                    f"${_config.MAX_ENGAGEMENT_COST:.2f} reached "
+                                    f"(${_cost:.2f} spent, {len(self.state.flags or {})} flag(s)). "
+                                    f"Send a follow-up to resume manually.]*"
+                                )
+                                return f"{response_text}\n\n{stop_msg}" if response_text else stop_msg
 
                         if is_autonomous and auto_continues < max_continues and not self._should_stop:
                             self._auto_continue_count = auto_continues + 1
@@ -1182,6 +1213,7 @@ Rules:
                                 self._build_continue_prompt("turn_limit", on_status=on_status),
                                 on_status=on_status,
                                 on_progress=on_progress,
+                                on_budget_exceeded=on_budget_exceeded,
                             )
                         # Not autonomous or max continues reached — return to user
                         self._auto_continue_count = 0
@@ -1215,6 +1247,7 @@ Rules:
                                     self._build_continue_prompt("context_overflow", on_status=on_status),
                                     on_status=on_status,
                                     on_progress=on_progress,
+                                    on_budget_exceeded=on_budget_exceeded,
                                 )
                             return "[Agent Error] Context overflow — session reset. Retry your message."
                         elif subtype == "error_during_execution":
@@ -1242,6 +1275,7 @@ Rules:
                                     self._build_continue_prompt("execution_error", on_status=on_status),
                                     on_status=on_status,
                                     on_progress=on_progress,
+                                    on_budget_exceeded=on_budget_exceeded,
                                 )
                             self._exec_error_retries = 0
                             return "[Agent Error] Execution error (retries exhausted) — type /new to start fresh."
