@@ -2373,6 +2373,7 @@ def handle_command(agent: RedTeamAgent, c2: SliverManager, orchestrator: Orchest
                     agent.state.resume_point = f"Retargeted {old_ip}→{_new}. State: {'; '.join(_resume_parts)}. Continue from where we left off."
             # Rebuild subsystems for new engagement dir
             from agents.base import StuckDetector
+            from engagement_logger import EngagementLogger
             agent._stuck = StuckDetector.load("interactive", agent.state.dir)
             agent._log = EngagementLogger(agent.state.dir, agent.state.engagement_mode)
             orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
@@ -3224,6 +3225,7 @@ def main():
                             agent.state.resume_point = f"Retargeted {old_ip}→{_new_ip}. State: {'; '.join(_resume_parts)}. Continue from where we left off."
                     # Rebuild subsystems for new engagement dir
                     from agents.base import StuckDetector
+                    from engagement_logger import EngagementLogger
                     agent._stuck = StuckDetector.load("interactive", agent.state.dir)
                     agent._log = EngagementLogger(agent.state.dir, agent.state.engagement_mode)
                     orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
@@ -3423,8 +3425,12 @@ def main():
                     _chat_cmds[0] += 1
                     _chat_last_cmd[0] = msg.split("Running: ", 1)[-1][:50]
 
+                # Debug/system messages always print in verbose mode
                 if verbose:
-                    return  # In verbose mode, the background ticker handles display
+                    _debug_prefixes = ("[WATCHDOG]", "STUCK:")
+                    if any(msg.startswith(p) or p in msg for p in _debug_prefixes):
+                        console.print(f"  [bold yellow]{msg}[/bold yellow]")
+                    return  # Other status messages handled by background ticker
 
                 # Non-verbose: update the spinner directly
                 elapsed = time.monotonic() - _chat_start_time[0]

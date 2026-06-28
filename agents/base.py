@@ -702,6 +702,15 @@ Anti-cheat is active. Commands matching blocked patterns terminate the session i
 - Do NOT access HTB forums, 0xdf, IppSec, InfoSecWriteups, Reddit solution threads, or writeup blogs
 - Allowed: tool documentation, man pages, exploit-db, CVE databases, HackTricks, GTFOBins, PayloadsAllTheThings, tool repos
 
+### Flag Location Pre-Check (do BEFORE choosing attack strategy)
+When you have code execution in any context (container, Lambda, CodeBuild, VM):
+```
+find / -name root.txt -o -name user.txt -o -name flag.txt 2>/dev/null
+ls -la /root/ /home/ 2>/dev/null
+```
+"Permission denied" = the file IS HERE. Escalate locally, do NOT escape to host/another
+container. Only pursue container escape if the flag does NOT exist in your current context.
+
 ### Methodology
 - Every service/configuration exists for a reason — unusual configs are likely the path
 - If obvious paths are exhausted, chain techniques (synthesis agent exists for this)

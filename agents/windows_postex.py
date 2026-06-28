@@ -43,6 +43,13 @@ dir "C:\\Program Files" && dir "C:\\Program Files (x86)"  # Installed apps
 - `wmic /namespace:\\\\root\\SecurityCenter2 path AntiVirusProduct GET displayName`
 - If EDR is present, avoid touching disk and use in-memory techniques only
 
+**Flag location check (CTF — do IMMEDIATELY):**
+```
+dir /s /b C:\\root.txt C:\\Users\\*\\root.txt C:\\Users\\*\\Desktop\\root.txt 2>nul
+dir /s /b C:\\user.txt C:\\Users\\*\\user.txt C:\\Users\\*\\Desktop\\user.txt 2>nul
+```
+"Access is denied" means the flag IS on this host — escalate locally.
+
 ## PHASE 2: Privilege Escalation Vectors (check in this order)
 
 ### 2a. Quick wins — check first

@@ -536,7 +536,6 @@ If you catch yourself doing recon after finding something exploitable, STOP and 
         elif reason == "execution_error":
             parts.append("Previous session hit an execution error and was discarded. "
                         "Starting fresh session with saved state. Continue from where you left off.")
-
         # Resume point (the most important piece of state)
         if getattr(self.state, "resume_point", ""):
             parts.append(f"\n**CURRENT POSITION:** {self.state.resume_point}")
@@ -985,6 +984,7 @@ Rules:
                             self._log.command_error("redops", self._hud_last_cmd, result_content[:300])
 
                         # Check for milestones in tool output to inform stuck detector
+                        _hit_milestone_priority = 0
                         if result_content and len(result_content) > 20:
                             import re as _ms_re
                             _rc_lower = result_content.lower()
@@ -992,6 +992,7 @@ Rules:
                                 _mpat = _milestone_entry[1]
                                 if _ms_re.search(_mpat, _rc_lower):
                                     self._stuck.record_milestone()
+                                    _hit_milestone_priority = _milestone_entry[0]
                                     break
 
                         # Stuck detection — kill on strategic loop
