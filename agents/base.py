@@ -4,6 +4,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from datetime import datetime
 from pathlib import Path
 
@@ -956,23 +958,13 @@ This is a red team engagement simulating a real adversary.
         effective_turns = max_turns or getattr(self, "MAX_TURNS_OVERRIDE", None) or AGENT_MAX_TURNS
         is_resume = bool(self._session_id)
 
-        cmd = [
-            "claude",
-            "-p",
-            "--output-format", "stream-json",
-            "--verbose",
-            "--model", agent_model,
-            "--max-turns", str(effective_turns),
-            "--permission-mode", "auto",
-        ]
-        if self.ALLOWED_TOOLS:
-            cmd.extend(["--allowedTools", self.ALLOWED_TOOLS])
-
-        if is_resume:
-            cmd.extend(["--resume", self._session_id])
-
-        if self.autonomous:
-            cmd.append("--dangerously-skip-permissions")
+        cmd = claude_client.stream_argv(
+            agent_model,
+            max_turns=effective_turns,
+            allowed_tools=self.ALLOWED_TOOLS or None,
+            resume=self._session_id if is_resume else None,
+            skip_permissions=self.autonomous,
+        )
 
         # On resume, send a short continuation directive instead of the full
         # system prompt — the session already has full context. Re-sending the

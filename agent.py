@@ -4,6 +4,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 import threading
 from datetime import datetime
 
@@ -656,16 +658,7 @@ Rules:
         try:
             import time as _t
             _start = _t.monotonic()
-            result = subprocess.run(
-                [
-                    "claude", "-p",
-                    "--output-format", "text",
-                    "--max-turns", "1",
-                    "--model", MODEL_FAST,
-                ],
-                input=prompt,
-                capture_output=True, text=True, timeout=60,
-            )
+            result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
             _elapsed = _t.monotonic() - _start
             if result.returncode == 0 and result.stdout.strip():
                 compacted = result.stdout.strip()[:2000]
@@ -732,25 +725,15 @@ Rules:
 
             _model = MODEL_EXPLOIT if self.fast_mode else MODEL
             _turns = MAX_TURNS * 2 if self.fast_mode else MAX_TURNS  # Sonnet is cheaper — double budget
-            cmd = [
-                "claude",
-                "-p",
-                "--output-format", "stream-json",
-                "--verbose",
-                "--model", _model,
-                "--max-turns", str(_turns),
-                "--permission-mode", "auto",
-                "--allowedTools", "Edit,Write,Read,Bash,Glob,Grep",
-            ]
-
-            # Resume a previous session if available
-            if self._session_id:
-                cmd.extend(["--resume", self._session_id])
-
             # In autonomous / CTF mode, skip permission prompts
             _is_ctf = getattr(self.state, "engagement_mode", "ctf") == "ctf"
-            if self.state.autonomous or _is_ctf:
-                cmd.append("--dangerously-skip-permissions")
+            cmd = claude_client.stream_argv(
+                _model,
+                max_turns=_turns,
+                allowed_tools=claude_client.DEFAULT_ALLOWED_TOOLS,
+                resume=self._session_id or None,
+                skip_permissions=bool(self.state.autonomous or _is_ctf),
+            )
 
             # Inherit full environment so claude picks up OAuth auth
             env = os.environ.copy()

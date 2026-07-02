@@ -16,6 +16,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -163,10 +165,7 @@ Finding:
 {content[:3000]}"""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text", "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode != 0 or not result.stdout.strip():
             # Fallback: use the raw finding as-is
             technique_doc = content
@@ -218,10 +217,7 @@ Agent response (excerpt):
 {agent_response[:2000]}"""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text", "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode != 0 or not result.stdout.strip():
             return 0
         technique_doc = result.stdout.strip()
@@ -350,10 +346,7 @@ Engagement data:
 {engagement_summary[:4000]}"""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text", "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=90,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=90)
         if result.returncode != 0 or not result.stdout.strip():
             # Fallback: ingest raw summary
             technique_doc = engagement_summary

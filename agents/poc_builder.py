@@ -16,6 +16,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from datetime import datetime
 from pathlib import Path
 
@@ -100,11 +102,7 @@ Output ONLY the Python exploit code in a code block. No explanation outside the 
 
     try:
         # Use Opus for exploit development — needs strong reasoning
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL],
-            input=prompt, capture_output=True, text=True, timeout=120,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL, timeout=120)
         if result.returncode == 0 and result.stdout.strip():
             # Extract code block
             code_match = re.search(r"```(?:python)?\n([\s\S]*?)```", result.stdout)
@@ -218,11 +216,7 @@ Be concise and professional. This is for responsible disclosure."""
         on_status(f"[poc_builder] Generating advisory for BUG-{bug_id}...")
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode == 0 and result.stdout.strip():
             advisory_path = engagement.poc_dir / f"bug_{bug_id:03d}_advisory.md" if isinstance(bug_id, int) \
                 else engagement.poc_dir / f"bug_{bug_id}_advisory.md"

@@ -16,6 +16,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -191,11 +193,7 @@ Respond in JSON:
 If this is NOT a security fix (just a regular bug fix), set severity to "none"."""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode == 0 and result.stdout.strip():
             json_match = re.search(r"\{[\s\S]*\}", result.stdout)
             if json_match:

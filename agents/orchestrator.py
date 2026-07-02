@@ -6,6 +6,8 @@ and either proceed autonomously or ask the operator for guidance when uncertain.
 
 import json
 import subprocess
+
+import claude_client
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -1008,16 +1010,7 @@ Do NOT continue executing verbatim commands when the underlying assumptions have
         analysis_prompt = self._build_analysis_prompt(phase_just_completed, phase_output)
 
         try:
-            result = subprocess.run(
-                [
-                    "claude", "-p",
-                    "--output-format", "text",
-                    "--max-turns", "1",
-                    "--model", MODEL_FAST,  # Decision analysis uses fast model
-                ],
-                input=analysis_prompt,
-                capture_output=True, text=True, timeout=120,
-            )
+            result = claude_client.oneshot(analysis_prompt, model=MODEL_FAST, timeout=120)
 
             if result.returncode != 0 or not result.stdout.strip():
                 # Fallback: use template-based decision
@@ -1176,10 +1169,7 @@ Rules:
 - Don't repeat failed techniques with different tools (same defense blocks all)"""
 
         try:
-            result = subprocess.run(
-                ["claude", "-p", "--output-format", "text", "--max-turns", "1", "--model", MODEL_PLANNER],
-                input=batch_prompt, capture_output=True, text=True, timeout=90,
-            )
+            result = claude_client.oneshot(batch_prompt, model=MODEL_PLANNER, timeout=90)
             if result.returncode != 0 or not result.stdout.strip():
                 return [self._fallback_decision(phase_completed)]
 

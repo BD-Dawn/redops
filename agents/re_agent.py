@@ -12,6 +12,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -434,11 +436,7 @@ Rules:
         on_status("[re_agent] LLM analyzing binary for vulnerabilities...")
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=90,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=90)
         if result.returncode == 0 and result.stdout.strip():
             json_match = re.search(r"\[[\s\S]*\]", result.stdout)
             if json_match:
@@ -561,15 +559,14 @@ Return [] if nothing is provably exploitable."""
 
     cfg_path = _mcp_config_file()
     allowed = ",".join(f"mcp__rebin__{t}" for t in _REBIN_TOOLS)
-    cmd = [
-        "claude", "-p",
-        "--output-format", "stream-json", "--verbose",
-        "--model", MODEL,
-        "--max-turns", str(max_turns),
-        "--mcp-config", cfg_path,
-        "--allowedTools", allowed,
-        "--dangerously-skip-permissions",
-    ]
+    cmd = claude_client.stream_argv(
+        MODEL,
+        max_turns=max_turns,
+        permission_mode=None,
+        allowed_tools=allowed,
+        mcp_config=cfg_path,
+        skip_permissions=True,
+    )
 
     if on_status:
         on_status(f"[re_agent] Launching Opus RE loop ({max_turns} turns) over rebin MCP...")

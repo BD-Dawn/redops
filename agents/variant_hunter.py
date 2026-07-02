@@ -11,6 +11,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from pathlib import Path
 
 import sys
@@ -54,11 +56,7 @@ Respond in JSON:
         on_status(f"[variant_hunter] Extracting pattern from BUG-{bug.get('id', '?')}...")
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode == 0 and result.stdout.strip():
             json_match = re.search(r"\{[\s\S]*\}", result.stdout)
             if json_match:
@@ -220,11 +218,7 @@ Be AGGRESSIVE in filtering. Only mark as variant if the code is clearly
 vulnerable in the same way as the original bug."""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=90,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=90)
         if result.returncode == 0 and result.stdout.strip():
             json_match = re.search(r"\[[\s\S]*\]", result.stdout)
             if json_match:

@@ -13,6 +13,8 @@ Updated by LLM (haiku) after each batch completes.
 
 import json
 import subprocess
+
+import claude_client
 from datetime import datetime
 from pathlib import Path
 
@@ -230,11 +232,7 @@ Rules:
 - If the objective changed (new DA found, new access gained), update it"""
 
         try:
-            result = subprocess.run(
-                ["claude", "-p", "--output-format", "text", "--max-turns", "1",
-                 "--model", MODEL_FAST],
-                input=prompt, capture_output=True, text=True, timeout=90,
-            )
+            result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=90)
             if result.returncode != 0 or not result.stdout.strip():
                 return
 

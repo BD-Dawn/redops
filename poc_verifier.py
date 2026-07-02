@@ -19,6 +19,8 @@ PoC types by finding class:
 import json
 import re
 import subprocess
+
+import claude_client
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -456,11 +458,7 @@ CONFIRMED: [one-line reason why the output proves the vulnerability]
 UNCONFIRMED: [one-line reason why the output does NOT prove the vulnerability]
 MANUAL: [one-line reason why human judgment is needed]"""
 
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text", "--max-turns", "1",
-             "--model", MODEL_FAST],
-            input=validation_prompt, capture_output=True, text=True, timeout=30,
-        )
+        result = claude_client.oneshot(validation_prompt, model=MODEL_FAST, timeout=30)
 
         if result.returncode == 0 and result.stdout.strip():
             verdict = result.stdout.strip().split("\n")[0]

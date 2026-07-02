@@ -19,6 +19,8 @@ import os
 import re
 import shutil
 import subprocess
+
+import claude_client
 import time
 from pathlib import Path
 
@@ -128,11 +130,7 @@ Respond with ONLY the harness code in a C code block. No explanation."""
         on_status("[fuzzer] Generating fuzzing harness with LLM...")
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL],
-            input=prompt, capture_output=True, text=True, timeout=90,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL, timeout=90)
         if result.returncode == 0 and result.stdout.strip():
             # Extract C code block
             code_match = re.search(r"```(?:c|cpp)?\n([\s\S]*?)```", result.stdout)

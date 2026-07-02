@@ -776,6 +776,7 @@ def _handle_ingest_url(url: str) -> None:
     """Fetch a URL, save as article, and incrementally ingest into ChromaDB."""
     import re
     import subprocess
+    import claude_client
     from config import ARTICLES_DIR, MODEL_FAST
     from ingest import ingest_incremental
 
@@ -783,19 +784,13 @@ def _handle_ingest_url(url: str) -> None:
 
     # Use claude to fetch and extract the article content
     try:
-        result = subprocess.run(
-            [
-                "claude", "-p",
-                "--output-format", "text",
-                "--max-turns", "1",
-                "--model", MODEL_FAST,
-            ],
-            input=(
+        result = claude_client.oneshot(
+            (
                 f"Fetch this URL and return the full article content in clean markdown. "
                 f"Include all sections, technical details, commands, code blocks, and specifics. "
                 f"Do not summarize. URL: {url}"
             ),
-            capture_output=True, text=True, timeout=120,
+            model=MODEL_FAST, timeout=120,
         )
         if result.returncode != 0 or not result.stdout.strip():
             console.print(f"[danger]Failed to fetch URL: {result.stderr[:300]}[/danger]")
@@ -870,6 +865,7 @@ def _handle_opsec(agent: RedTeamAgent, arg: str) -> None:
 def _handle_plan(agent: RedTeamAgent) -> None:
     """Generate an attack plan based on current engagement state."""
     import subprocess
+    import claude_client
     from config import MODEL
 
     if not agent.state.target:
@@ -949,14 +945,8 @@ For port scanning, always plan TCP scanning first (fast, actionable results) and
 Be specific and actionable — this is a working plan, not a textbook."""
 
     try:
-        result = subprocess.run(
-            [
-                "claude", "-p",
-                "--output-format", "text",
-                "--model", MODEL,
-            ],
-            input=plan_prompt,
-            capture_output=True, text=True, timeout=300,
+        result = claude_client.oneshot(
+            plan_prompt, model=MODEL, max_turns=None, timeout=300,
         )
         if result.returncode == 0 and result.stdout.strip():
             console.print()

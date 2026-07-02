@@ -12,6 +12,8 @@ are saved to engagement state for the synthesis agent to use.
 
 import json
 import subprocess
+
+import claude_client
 from config import MODEL_FAST
 
 
@@ -64,11 +66,7 @@ Rules:
 - For trust relationships: specify WHAT trusts WHAT and HOW"""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text", "--max-turns", "1",
-             "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode != 0 or not result.stdout.strip():
             return {"extracted": 0}
 

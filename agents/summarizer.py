@@ -8,6 +8,8 @@ Also extracts structured findings into the findings DB.
 import json
 import re
 import subprocess
+
+import claude_client
 from datetime import datetime
 from pathlib import Path
 
@@ -123,16 +125,7 @@ def summarize_output(agent_name: str, raw_output: str, on_status=None) -> str:
         on_status(f"[orchestrator] Summarizing {agent_name} output...")
 
     try:
-        result = subprocess.run(
-            [
-                "claude", "-p",
-                "--output-format", "text",
-                "--max-turns", "1",
-                "--model", MODEL_FAST,
-            ],
-            input=prompt,
-            capture_output=True, text=True, timeout=90,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=90)
 
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()

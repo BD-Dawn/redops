@@ -21,6 +21,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -276,11 +278,7 @@ Exploitability guide:
 - false_positive: not a real bug"""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode == 0 and result.stdout.strip():
             json_match = re.search(r"\{[\s\S]*\}", result.stdout)
             if json_match:

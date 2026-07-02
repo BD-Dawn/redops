@@ -8,6 +8,8 @@ import json
 import os
 import re
 import subprocess
+
+import claude_client
 from pathlib import Path
 
 import sys
@@ -322,11 +324,7 @@ Respond in JSON only:
 }}"""
 
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "text",
-             "--max-turns", "1", "--model", MODEL_FAST],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
+        result = claude_client.oneshot(prompt, model=MODEL_FAST, timeout=60)
         if result.returncode == 0 and result.stdout.strip():
             # Extract JSON from response
             text = result.stdout.strip()
