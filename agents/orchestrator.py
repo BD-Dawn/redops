@@ -34,6 +34,7 @@ from agents.windows_postex import WindowsPostExAgent
 from agents.linux_lateral import LinuxLateralAgent
 from agents.windows_lateral import WindowsLateralAgent
 from agents.cloud import CloudAgent
+from agents.functional_tester import FunctionalTester
 from agents.summarizer import cache_output, summarize_output, extract_findings_from_summary
 from findings_db import FindingsDB
 from exit_evaluator import ExitEvaluator
@@ -160,7 +161,7 @@ class Orchestrator:
     """
 
     PHASES = [
-        "recon", "exploit", "postex", "codereview", "cvehunter", "cloud",
+        "recon", "exploit", "functional", "postex", "codereview", "cvehunter", "cloud",
         "triage", "noise_filter", "param_analyzer", "sanity_checker", "synthesis", "report",
         "linux_postex", "windows_postex", "linux_lateral", "windows_lateral",
     ]
@@ -179,6 +180,7 @@ class Orchestrator:
         "sanity_checker": SanityChecker,
         "report": ReportAgent,
         "param_analyzer": ParamAnalyzer,
+        "functional": FunctionalTester,
         "synthesis": SynthesisAgent,
         "linux_postex": LinuxPostExAgent,
         "windows_postex": WindowsPostExAgent,
@@ -1207,6 +1209,7 @@ Rules:
             "recon": "OSINT, passive/active reconnaissance, scanning, enumeration",
             "param_analyzer": "URL/parameter attack surface mapping — extracts parameters, maps to attack vectors, produces prioritized test plan",
             "exploit": "Vulnerability exploitation, credential attacks, payload delivery, initial access",
+            "functional": "Application authorization & business-logic testing (LE/pentest) — registers/uses real accounts, builds an authz matrix, tests BOLA/IDOR (vertical & horizontal with two users), and abuses business logic (amount/price/fee tampering, step-skipping, race conditions). Use for web apps after recon to test AUTHENTICATED functionality, not just the unauth surface.",
             "linux_postex": "Linux/container post-exploitation — enumeration, SUID/capability/kernel privesc, Docker escape, credential harvesting",
             "windows_postex": "Windows post-exploitation — enumeration, SeImpersonate/Potato/UAC/service privesc, SAM/LSASS dumping",
             "linux_lateral": "Linux lateral movement — SSH pivoting, tunneling (chisel/ligolo), credential reuse, container-to-host breakout",

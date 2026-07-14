@@ -2234,6 +2234,23 @@ def _handle_auto(orchestrator: Orchestrator, arg: str) -> None:
                 "param_analyzer", task,
                 on_status=on_status, on_progress=on_progress, summarize=False,
             )
+        elif subcmd == "functional":
+            recon_data = ""
+            if orchestrator.recon.results:
+                recon_data = orchestrator.recon.results[-1].get("summary") or orchestrator.recon.results[-1]["response"][:8000]
+            task = custom_task or (
+                f"Test the authenticated functionality of {orchestrator.state.target}. "
+                f"Register test account(s) — or ask the operator for credentials — map the "
+                f"roles and sensitive actions, then test authorization (BOLA/IDOR, vertical & "
+                f"horizontal with two users) and business logic. Prove any flaw by showing "
+                f"another identity's data or an unauthorized state change; stay in scope and "
+                f"use test accounts with minimal impact.\n\n"
+                f"Discovered surface:\n{recon_data}"
+            )
+            result = orchestrator.dispatch(
+                "functional", task,
+                on_status=on_status, on_progress=on_progress, summarize=False,
+            )
         elif subcmd == "synthesis":
             state = orchestrator.state
             # Use the rich synthesis_context() method — structured by category
@@ -2346,7 +2363,7 @@ def _handle_auto(orchestrator: Orchestrator, arg: str) -> None:
         else:
             if not verbose:
                 live.stop()
-            console.print(f"[warning]Unknown auto command: {subcmd}. Use: recon, exploit, linux_postex, windows_postex, linux_lateral, windows_lateral, postex, codereview, cvehunter, triage, param_analyzer, synthesis, chain, continue, resume, status, threshold[/warning]")
+            console.print(f"[warning]Unknown auto command: {subcmd}. Use: recon, exploit, functional, linux_postex, windows_postex, linux_lateral, windows_lateral, postex, codereview, cvehunter, triage, param_analyzer, synthesis, chain, continue, resume, status, threshold[/warning]")
             return
     except KeyboardInterrupt:
         _auto_refresh_stop.set()
