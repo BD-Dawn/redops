@@ -3422,6 +3422,88 @@ def main():
                     if cred_count:
                         console.print(f"[dim]  Parsed {cred_count} credential(s) from input[/dim]")
 
+            # ── Web/domain new-engagement intent (no IPv4 in message) ──
+            # Web/bug-bounty targets are domains, not IPs, so the IPv4 switch above
+            # never fires for them — that let a stale engagement's resume_point,
+            # operator directive, total_cost and vault bleed into a new web target.
+            # On EXPLICIT new-engagement intent, resolve a candidate domain and
+            # CONFIRM with the operator before creating a fresh, isolated engagement.
+            if not _ip_match:
+                _new_eng_intent = _re.search(
+                    r'\b(new\s+(?:engagement|target)|(?:start|begin)(?:ing)?\s+'
+                    r'(?:a\s+)?new\s+(?:engagement|target)|fresh\s+engagement)\b',
+                    user_input, _re.IGNORECASE,
+                )
+                if _new_eng_intent:
+                    def _extract_web_target(text: str) -> str:
+                        m = _re.search(r'https?://([^\s/"\'<>]+)', text)
+                        if m:
+                            return m.group(1).lower()
+                        m = _re.search(
+                            r'\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+'
+                            r'[a-z]{2,24})\b',
+                            text, _re.IGNORECASE,
+                        )
+                        return m.group(1).lower() if m else ""
+
+                    _candidate = _extract_web_target(user_input)
+                    # If a scope file is referenced, mine it for a domain.
+                    if not _candidate:
+                        _fp = _re.search(r'(/[^\s"\'<>]+)', user_input)
+                        if _fp:
+                            from pathlib import Path as _P
+                            try:
+                                _sp = _P(_fp.group(1))
+                                if _sp.is_file():
+                                    _candidate = _extract_web_target(
+                                        _sp.read_text(errors="replace")[:5000]
+                                    )
+                            except Exception:
+                                _candidate = ""
+
+                    console.print(
+                        f"[yellow]New-engagement intent detected — current target: "
+                        f"[bold]{agent.state.target or '(none)'}[/bold][/yellow]"
+                    )
+                    _default_hint = f" [{_candidate}]" if _candidate else ""
+                    _ans = session.prompt(
+                        HTML(f"<b>New engagement target{_default_hint} "
+                             f"(Enter=accept, 'n'=cancel):</b> ")
+                    ).strip()
+
+                    if _ans.lower() in ("n", "no", "cancel"):
+                        console.print("[dim]  Cancelled — passing message to agent as-is.[/dim]")
+                    else:
+                        _target = _ans or _candidate
+                        if not _target:
+                            console.print("[dim]  No target resolved — passing message to agent as-is.[/dim]")
+                        else:
+                            _mgr = agent._engagement_mgr
+                            _old_mode = agent.state.engagement_mode
+                            _existing = _mgr.switch(_target)
+                            if _existing and _existing.target:
+                                agent.state = _existing
+                                console.print(
+                                    f"[success]Switched to existing engagement: "
+                                    f"{_existing.target} ({_existing.engagement_mode})[/success]"
+                                )
+                            else:
+                                _eng = _mgr.create(_target, _old_mode)
+                                agent.state = _eng
+                                console.print(
+                                    f"[success]New engagement: {_target} ({_old_mode}) — "
+                                    f"fresh state, cost reset[/success]"
+                                )
+                            # Full reset — no bleedover from previous engagement.
+                            agent.reset_for_new_engagement()
+                            orchestrator = Orchestrator(agent.state, autonomous=agent.state.autonomous)
+                            agent.orchestrator = orchestrator
+                            import config as _cfg
+                            _cfg.EVIDENCE_DIR = agent.state.evidence_dir
+                            _cred_n = agent.state.parse_credentials_from_text(user_input)
+                            if _cred_n:
+                                console.print(f"[dim]  Parsed {_cred_n} credential(s) from input[/dim]")
+
             # Detect engagement continuation requests — with or without attached context.
             # "continue" alone → resume orchestrator. "continue but focus on X" → resume
             # with the directive injected into the next planning cycle.
