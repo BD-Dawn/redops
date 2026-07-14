@@ -41,8 +41,39 @@ MAX_TURNS = int(os.getenv("REDOPS_MAX_TURNS", "25"))       # Interactive agent t
 # "root achieved" milestone. These bound the blast radius.
 MAX_AUTO_CONTINUES = int(os.getenv("REDOPS_MAX_CONTINUES", "8"))          # non-CTF auto-continues
 MAX_AUTO_CONTINUES_CTF = int(os.getenv("REDOPS_MAX_CONTINUES_CTF", "12")) # CTF (was 40)
-MAX_ENGAGEMENT_COST = float(os.getenv("REDOPS_MAX_COST", "25.0"))         # USD hard ceiling; stops --auto regardless of budget
+MAX_ENGAGEMENT_COST = float(os.getenv("REDOPS_MAX_COST", "25.0"))         # USD hard ceiling; stops --auto regardless of budget (CTF only)
 CTF_FLAG_GOAL = int(os.getenv("REDOPS_CTF_FLAG_GOAL", "2"))               # stop --auto once this many flags are recorded (user+root)
+
+# LE/RedTeam are NOT walled by the hard $ ceiling above (real engagements, not
+# bounded lab boxes). Instead the autonomous loop warns in red, halts, and asks
+# the operator to continue or stop when Claude session/context-window usage
+# reaches this fraction. CTF keeps the hard $ ceiling.
+SESSION_USAGE_WARN_PCT = float(os.getenv("REDOPS_SESSION_WARN_PCT", "0.90"))
+
+
+def context_fill_fraction(result_event: dict) -> float:
+    """Fraction (0.0-1.0) of the Claude context window used by the last turn.
+
+    Reads the CLI stream-json result event: prefers per-model ``modelUsage``
+    (which carries the exact ``contextWindow``), falls back to the ``usage``
+    token block with a 200k default window. Used by the LE/RT session-usage
+    budget gate in both the interactive agent and the orchestrator.
+    """
+    if not result_event:
+        return 0.0
+    used = win = 0
+    for m in (result_event.get("modelUsage") or {}).values():
+        u = (m.get("inputTokens", 0) + m.get("cacheReadInputTokens", 0)
+             + m.get("cacheCreationInputTokens", 0))
+        used = max(used, u)
+        win = max(win, m.get("contextWindow", 0) or 0)
+    if not used:
+        u = result_event.get("usage") or {}
+        used = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                + u.get("cache_creation_input_tokens", 0))
+    if not win:
+        win = 200000
+    return (used / win) if win else 0.0
 AGENT_MAX_TURNS = int(os.getenv("REDOPS_AGENT_MAX_TURNS", "3"))  # Micro-agent dispatch limit
 CHAIN_MAX_TURNS = int(os.getenv("REDOPS_CHAIN_TURNS", "12"))     # Chain execution turn budget (bypass batch planner)
 SOFT_TURN_LIMIT = int(os.getenv("REDOPS_SOFT_TURNS", "2"))       # Strategy reassessment trigger

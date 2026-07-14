@@ -530,6 +530,7 @@ class BaseAgent:
         self.opsec_log: list[dict] = []
         self._last_cost: float = 0
         self._last_turns: int = 0
+        self._last_ctx_frac: float = 0.0  # Claude context-window fill of last turn (LE/RT budget gate)
         self.findings_db = FindingsDB()
         # Per-engagement logger
         _eng_dir = getattr(engagement_state, "dir", _config.ENGAGEMENTS_DIR / "_blank")
@@ -1315,6 +1316,7 @@ This is a red team engagement simulating a real adversary.
                 self._session_id = last_result.get("session_id", self._session_id)
                 self._last_cost = last_result.get("total_cost_usd", 0)
                 self._last_turns = last_result.get("num_turns", 1)
+                self._last_ctx_frac = _config.context_fill_fraction(last_result)
                 # Accumulate cost + time on engagement state (persisted)
                 _elapsed = _time.monotonic() - _session_start
                 if self.state.target:

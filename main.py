@@ -3815,10 +3815,39 @@ def main():
                         return new
                     console.print("[dim]  Enter 1-3, c, or s[/dim]")
 
+            def _prompt_session_limit(frac: float, cost_so_far: float) -> bool:
+                """LE/RT: Claude session usage hit the warn threshold. Red warning,
+                halt, operator picks continue (fresh session) or stop. Returns True
+                to continue, False to stop."""
+                _refresh_stop.set()
+                if _verbose_ticker and _verbose_ticker.is_started:
+                    _verbose_ticker.stop()
+                if live.is_started:
+                    live.stop()
+                console.print(
+                    f"\n[bold red]  ⚠  SESSION USAGE {frac * 100:.0f}% — "
+                    f"Claude context is nearly full (${cost_so_far:.2f} spent).[/bold red]"
+                )
+                console.print("[red]  The engagement has been halted.[/red]")
+                console.print("[dim]  [c] Continue (starts a fresh session, context resets)[/dim]")
+                console.print("[dim]  [s] Stop the run[/dim]\n")
+                while True:
+                    try:
+                        choice = console.input("[bold]  Continue? [c/s] [/bold]").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        return False
+                    if choice in ("c", "continue", "y", "yes"):
+                        console.print("[success]  Continuing with a fresh session.[/success]\n")
+                        return True
+                    if choice in ("s", "stop", "n", "no"):
+                        return False
+                    console.print("[dim]  Enter c or s[/dim]")
+
             try:
                 response = agent.chat(user_input + c2_context, on_status=update_status,
                                       on_progress=on_progress,
-                                      on_budget_exceeded=_prompt_budget_extension)
+                                      on_budget_exceeded=_prompt_budget_extension,
+                                      on_session_limit=_prompt_session_limit)
             finally:
                 _refresh_stop.set()
                 _refresh_thread.join(timeout=2)

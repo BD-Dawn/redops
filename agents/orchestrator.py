@@ -17,7 +17,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import MODEL, MODEL_FAST, MODEL_PLANNER, EVIDENCE_DIR, FINDINGS_DIR, CHAIN_MAX_TURNS, MAX_ENGAGEMENT_COST
+from config import MODEL, MODEL_FAST, MODEL_PLANNER, EVIDENCE_DIR, FINDINGS_DIR, CHAIN_MAX_TURNS, MAX_ENGAGEMENT_COST, SESSION_USAGE_WARN_PCT
 from agents.recon import ReconAgent
 from agents.exploit import ExploitAgent
 from agents.postex import PostExAgent
@@ -1718,17 +1718,31 @@ Respond with ONLY the JSON object, nothing else."""
         iteration = 0
 
         while iteration < max_micro_dispatches:
-            # Hard cost ceiling — stop autonomous dispatch regardless of the
-            # iteration budget. Mirrors the interactive agent's ceiling so no
-            # autonomous path can run away on spend.
+            # Autonomous stop gate — mirrors the interactive agent per mode.
+            # CTF: hard $ ceiling (bounded labs). LE/RT: no $ ceiling — halt at high
+            # Claude session/context usage (max across dispatched agents) instead.
             _eng_cost = getattr(self.state, "total_cost", 0.0)
-            if _eng_cost >= MAX_ENGAGEMENT_COST:
+            _is_ctf = getattr(self.state, "engagement_mode", "ctf") == "ctf"
+            if _is_ctf and _eng_cost >= MAX_ENGAGEMENT_COST:
                 if on_status:
                     on_status(
                         f"[orchestrator] Cost ceiling ${MAX_ENGAGEMENT_COST:.2f} reached "
                         f"(${_eng_cost:.2f} spent) — halting autonomous dispatch."
                     )
                 break
+            if not _is_ctf:
+                _ctx_frac = max(
+                    (getattr(a, "_last_ctx_frac", 0.0) for a in self._agents.values()),
+                    default=0.0,
+                )
+                if _ctx_frac >= SESSION_USAGE_WARN_PCT:
+                    if on_status:
+                        on_status(
+                            f"[orchestrator] Claude session usage {_ctx_frac * 100:.0f}% reached "
+                            f"(${_eng_cost:.2f} spent) — halting autonomous dispatch. "
+                            f"Resume with /auto resume to continue."
+                        )
+                    break
 
             # Between batches: update attack plan, then exit check, then re-plan
             if not task_queue:

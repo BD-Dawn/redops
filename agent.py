@@ -54,6 +54,7 @@ class RedTeamAgent:
         self._session_id: str = getattr(self.state, "session_id", "") or ""
         self._last_cost: float = 0
         self._last_turns: int = 0
+        self._last_ctx_frac: float = 0.0  # Claude context-window fill of last turn (LE/RT budget gate)
         self._turn_count: int = 0
         self.fast_mode: bool = False  # Use MODEL_EXPLOIT (sonnet) instead of MODEL (opus)
         self.stop_event: threading.Event | None = None  # External stop signal (blitz mode)
@@ -670,7 +671,7 @@ Rules:
         return ""
 
     def chat(self, user_message: str, on_status=None, on_progress=None,
-             on_budget_exceeded=None) -> str:
+             on_budget_exceeded=None, on_session_limit=None) -> str:
         """Send a message to Claude Code and get a response.
 
         In autonomous mode, auto-continues when turn limit is hit instead of
@@ -1060,6 +1061,7 @@ Rules:
                                         on_status=on_status,
                                         on_progress=on_progress,
                                         on_budget_exceeded=on_budget_exceeded,
+                                        on_session_limit=on_session_limit,
                                     )
                                 response_text = (
                                     f"**[TERMINATED — STUCK DETECTED]**\n{stuck_msg}\n\n"
@@ -1128,6 +1130,7 @@ Rules:
                     self._session_id = new_session
                 self._last_cost = last_result.get("total_cost_usd", 0)
                 self._last_turns = last_result.get("num_turns", 1)
+                self._last_ctx_frac = _config.context_fill_fraction(last_result)
                 # Accumulate cost + time on engagement state (persisted)
                 _elapsed = _time.monotonic() - _session_start
                 if self.state.target:
@@ -1206,6 +1209,26 @@ Rules:
                                 )
                                 return f"{response_text}\n\n{stop_msg}" if response_text else stop_msg
 
+                        # LE/RedTeam: no hard $ ceiling — warn + halt at high Claude
+                        # session/context usage and let the operator continue or stop.
+                        if (is_autonomous and not _is_ctf
+                                and self._last_ctx_frac >= _config.SESSION_USAGE_WARN_PCT):
+                            _pct = self._last_ctx_frac * 100
+                            if on_session_limit and on_session_limit(self._last_ctx_frac, _cost):
+                                # Continue: reset the Claude session so context rebuilds
+                                # from engagement state, dropping the fill back down.
+                                self._session_id = ""
+                                self._log.info("session_limit_continue",
+                                               usage=f"{_pct:.0f}%", cost=f"${_cost:.2f}")
+                            else:
+                                self._auto_continue_count = 0
+                                self._auto_save()
+                                stop_msg = (
+                                    f"*[Autonomous run halted — {_pct:.0f}% Claude session usage "
+                                    f"reached (${_cost:.2f} spent). Send a follow-up to resume.]*"
+                                )
+                                return f"{response_text}\n\n{stop_msg}" if response_text else stop_msg
+
                         if is_autonomous and auto_continues < max_continues and not self._should_stop:
                             self._auto_continue_count = auto_continues + 1
                             self._hud_session_num += 1
@@ -1229,6 +1252,7 @@ Rules:
                                 on_status=on_status,
                                 on_progress=on_progress,
                                 on_budget_exceeded=on_budget_exceeded,
+                                on_session_limit=on_session_limit,
                             )
                         # Not autonomous or max continues reached — return to user
                         self._auto_continue_count = 0
@@ -1263,6 +1287,7 @@ Rules:
                                     on_status=on_status,
                                     on_progress=on_progress,
                                     on_budget_exceeded=on_budget_exceeded,
+                                    on_session_limit=on_session_limit,
                                 )
                             return "[Agent Error] Context overflow — session reset. Retry your message."
                         elif subtype == "error_during_execution":
@@ -1291,6 +1316,7 @@ Rules:
                                     on_status=on_status,
                                     on_progress=on_progress,
                                     on_budget_exceeded=on_budget_exceeded,
+                                    on_session_limit=on_session_limit,
                                 )
                             self._exec_error_retries = 0
                             return "[Agent Error] Execution error (retries exhausted) — type /new to start fresh."
