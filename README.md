@@ -6,41 +6,38 @@ Red team agent framework powered by Claude. Handles recon through post-ex with s
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    main.py (Interactive CLI)                  │
-│   /auto, /target, /status, /c2, /report, /research, /blitz  │
-└──────────────┬───────────────────┬───────────────────────────┘
-               │                   │
-               v                   v
-  ┌────────────────────┐  ┌────────────────────┐
-  │  Interactive Agent  │  │   Orchestrator     │
-  │  (agent.py)         │  │  (orchestrator.py) │
-  │                     │  │                    │
-  │  Micro-dispatch     │  │  Phase FSM         │
-  │  1-N turns          │  │  Agent dispatch    │
-  │  Conversation loop  │  │  human-in-the-loop decisions    │
-  │  Stuck detection    │  │  Cost tracking     │
-  └────────────────────┘  │  Attack planning   │
-                          │  Task decomposition │
-                          └────────┬───────────┘
-                                   │
-          ┌────────────────────────┼────────────────────┐
-          v                        v                    v
-  ┌──────────────┐     ┌──────────────────┐    ┌──────────────┐
-  │  Specialist   │     │  KnowledgeBase   │    │  FindingsDB  │
-  │  Agents (30+) │     │  (ChromaDB RAG)  │    │  (SQLite)    │
-  └──────────────┘     └──────────────────┘    └──────────────┘
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, monospace','lineColor':'#94a3b8','primaryBorderColor':'#475569'}}}%%
+flowchart TD
+    CLI(["<b>main.py</b> · Interactive CLI<br/>/target · /auto · /mode · /report · /c2"])
 
-  ┌──────────────────────────────────────────────────────────┐
-  │  Engagement State  (per-target, per-mode)                │
-  │  state.json | checkpoint.json | findings.db | vault.enc  │
-  └──────────────────────────────────────────────────────────┘
+    CLI --> IA["<b>Interactive Agent</b><br/><i>agent.py</i><br/>─────────────<br/>human-in-the-loop REPL<br/>conversation loop · RAG/turn · stuck detection"]
+    CLI --> ORC["<b>Orchestrator</b><br/><i>orchestrator.py</i><br/>─────────────<br/>autonomous phase FSM<br/>dispatch · attack planning · cost tracking"]
 
-  ┌──────────────────────────────────────────────────────────┐
-  │  Support: Secret Vault | Sliver C2 | OPSEC Scorer        │
-  │  Scope Enforcer | Learner | Bounty Monitor | CVE Feed    │
-  └──────────────────────────────────────────────────────────┘
+    IA --> CORE
+    ORC --> CORE
+
+    subgraph CORE["● shared core — both drivers use these"]
+        direction LR
+        SPEC["<b>Specialist Agents</b><br/>30+ · recon · exploit<br/>post-ex · cloud · report"]
+        KB["<b>KnowledgeBase</b><br/>ChromaDB RAG<br/>mode-filtered"]
+        FDB["<b>FindingsDB</b><br/>SQLite<br/>per-engagement"]
+    end
+
+    CORE --> STATE[("<b>Engagement State</b><br/>per-target · per-mode &nbsp;CTF · LE · RT<br/>state · checkpoint · findings · vault.enc")]
+    STATE --> SUP["<b>Support</b><br/>Secret Vault · Sliver C2 · OPSEC · Scope Enforcer<br/>Learner · Bounty Monitor · CVE Feed"]
+
+    classDef entry   fill:#0f172a,stroke:#020617,color:#f8fafc,stroke-width:2px;
+    classDef driver  fill:#0e7490,stroke:#155e75,color:#ecfeff,stroke-width:2px;
+    classDef core    fill:#047857,stroke:#065f46,color:#ecfdf5,stroke-width:1px;
+    classDef state   fill:#9a3412,stroke:#7c2d12,color:#fff7ed,stroke-width:2px;
+    classDef support fill:#334155,stroke:#1e293b,color:#f1f5f9,stroke-width:1px;
+
+    class CLI entry;
+    class IA,ORC driver;
+    class SPEC,KB,FDB core;
+    class STATE state;
+    class SUP support;
 ```
 
 ### Execution modes
