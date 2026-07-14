@@ -511,7 +511,15 @@ If you catch yourself doing recon after finding something exploitable, STOP and 
         time_str = f"{mins}m{secs:02d}s" if mins < 60 else f"{mins // 60}h{mins % 60:02d}m"
         session_str = f"S{self._hud_session_num}" if self._hud_session_num > 0 else ""
         cmd_short = self._hud_last_cmd[:45]
-        parts = [f"T{turn}/{MAX_TURNS}"]
+        # Active target + mode, front and center — makes engagement drift/bleed
+        # obvious every turn (e.g. an AD box showing up during a web engagement).
+        _target = getattr(self.state, "target", "") or "no-target"
+        _mode = getattr(self.state, "engagement_mode", "ctf")
+        _tgt_short = _target if len(_target) <= 24 else _target[:21] + "…"
+        parts = [f"{_tgt_short}[{_mode}]", f"T{turn}/{MAX_TURNS}"]
+        # Claude session/context fill — surfaces the LE/RT budget gate as it climbs.
+        if self._last_ctx_frac > 0:
+            parts.append(f"ctx{self._last_ctx_frac * 100:.0f}%")
         if session_str:
             parts.append(session_str)
         parts.append(cost_str)
