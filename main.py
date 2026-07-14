@@ -3532,6 +3532,67 @@ def main():
                     console.print("[warning]This engagement is SOLVED. Use /new <target> for a new one or /load to revisit.[/warning]")
                     continue
 
+                # --- Stale-directive guard on bare 'continue' ---
+                # "continue with the engagement" otherwise blindly follows whatever
+                # operator directives (and target) are persisted — including stale ones
+                # from an earlier focus or a different engagement. Surface them and let
+                # the operator choose which steers this run, add a fresh one, or delete
+                # stale ones. The target is shown so an engagement mismatch is obvious.
+                import re as _dre
+                _dirs = [n for n in agent.state.notes if n.startswith("[operator directive]")]
+                if _is_bare_continue and _dirs:
+                    console.print(
+                        f"\n[yellow]Resuming [bold]{agent.state.target}[/bold] "
+                        f"([bold]{agent.state.engagement_mode}[/bold]) — confirm which "
+                        f"directive steers this run (if the target is wrong, Ctrl+C and "
+                        f"start a new engagement):[/yellow]"
+                    )
+                    while _dirs:
+                        for _i, _d in enumerate(_dirs, 1):
+                            console.print(f"  [{_i}] {_d.replace('[operator directive] ', '')[:140]}")
+                        console.print("[dim]  [1-N] follow only that (delete the rest) · [a] follow all · "
+                                      "[d N] delete N · [+] add new (replaces all) · [c] clear all[/dim]")
+                        try:
+                            _sel = session.prompt(HTML("<b>Directive:</b> ")).strip().lower()
+                        except EOFError:
+                            _sel = "a"
+                        # KeyboardInterrupt propagates to the REPL's Ctrl+C handler so the
+                        # operator can abort and start a new engagement (per the hint above).
+                        if _sel in ("a", "", "all"):
+                            break
+                        if _sel in ("c", "clear", "none"):
+                            for _d in _dirs:
+                                agent.state.notes.remove(_d)
+                            _dirs = []
+                            console.print("[success]  Cleared all directives.[/success]")
+                            break
+                        if _sel in ("+", "new"):
+                            _new = session.prompt(HTML("<b>New directive:</b> ")).strip()
+                            for _d in _dirs:
+                                agent.state.notes.remove(_d)
+                            _dirs = []
+                            if _new:
+                                agent.state.notes.append(f"[operator directive] {_new[:500]}")
+                                console.print("[success]  Replaced with your new directive.[/success]")
+                            else:
+                                console.print("[success]  Cleared all directives.[/success]")
+                            break
+                        _dm = _dre.match(r'd\s*(\d+)$', _sel)
+                        if _dm and 1 <= int(_dm.group(1)) <= len(_dirs):
+                            agent.state.notes.remove(_dirs.pop(int(_dm.group(1)) - 1))
+                            console.print("[dim]  Deleted.[/dim]")
+                            continue
+                        if _sel.isdigit() and 1 <= int(_sel) <= len(_dirs):
+                            _keep = _dirs[int(_sel) - 1]
+                            for _d in _dirs:
+                                if _d != _keep:
+                                    agent.state.notes.remove(_d)
+                            _dirs = [_keep]
+                            console.print(f"[success]  Following directive {_sel}; deleted the rest.[/success]")
+                            break
+                        console.print("[dim]  Enter 1-N, a, d N, +, or c[/dim]")
+                    agent.state.save()
+
                 # --- Engagement switch detection ---
                 # "continue with paypal engagement" or "continue with 10.129.33.5"
                 # should switch to that engagement, not save as a directive.
