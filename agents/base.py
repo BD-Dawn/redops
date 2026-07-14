@@ -764,6 +764,24 @@ Triage every candidate by REAL impact, not theoretical risk:
   item matters in context. Do NOT pad the report with them or inflate their severity.
 - A wrong "high" is worse than a missed "low." When severity is uncertain, rate it DOWN.
 
+### Info-disclosure is a PIVOT, not a destination (do NOT stop at the leak)
+Some low/info findings EXPOSE attack surface. Treat them as Map-phase expansion,
+never as a terminal finding. When you discover anything that reveals internal
+endpoints, routes, parameters, object IDs, or versions — e.g. Prometheus `/metrics`,
+`/actuator`, health/debug endpoints, Swagger/OpenAPI, GraphQL introspection, JS
+bundles / source maps, verbose stack traces, exposed `.env`/config, directory
+listings, route/API inventories — do NOT record "information disclosure" and move on.
+That is at most a low/info note. Instead, IMMEDIATELY:
+1. **Enumerate** the exposed surface — pull every endpoint, method, param, and
+   `:id`/object-reference route it reveals.
+2. **Rank by impact** — money/data/account actions first (balances, transfers,
+   withdrawals, orders, sessions, KYC, permissions, admin, IP allow-lists).
+3. **Test the top items for MATERIAL bugs**, with authenticated context and two
+   accounts where possible: BOLA/IDOR on object references, broken access control,
+   auth/token flaws, injection. THAT downstream bug is the reportable finding.
+The disclosure only maps the surface — do not end the vector there. A vector is not
+"tested" until the surface it revealed has been probed for material impact.
+
 ### PoC gate (a finding is not reportable until proven)
 Every MATERIAL finding MUST have a reproducible proof-of-concept. Findings are
 held back from the report until their PoC is confirmed.
